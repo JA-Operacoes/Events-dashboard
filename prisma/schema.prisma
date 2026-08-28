@@ -1,0 +1,150 @@
+// Schema — banco de teste no Neon, enquanto a API oficial não existe.
+// Eventos/edições são cadastrados aqui manualmente por enquanto (o admin
+// registra pelo painel). `idEventoExterno` fica reservado pra quando a API
+// oficial do sistema deles existir e a gente quiser linkar pelo ID de lá —
+// não é usado ainda.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  // Neon recomenda uma URL separada, sem pgbouncer, para migrations.
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  isAdmin      Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  eventAccess    UserEventAccess[]
+  passwordResets PasswordResetToken[]
+
+  @@map("users")
+}
+
+/// Cadastro próprio de eventos — até a API oficial existir, é o admin quem
+/// registra aqui pelo painel.
+model Event {
+  id              String   @id @default(cuid())
+  nome            String
+  /// Reservado para o dia em que a API oficial existir e precisarmos linkar
+  /// pelo ID deles (ex.: 171 = "A I & DATA"). Não usado ainda.
+  idEventoExterno Int?     @unique
+  /// Marca própria do evento (multi-tenant) — quando definida, substitui a
+  /// logo padrão do Portal JA na sidebar enquanto esse evento está selecionado.
+  logoUrl         String?
+  /// Alguns eventos contratados não querem nenhuma referência visível à
+  /// empresa contratada (Portal JA) — liga isso pra esconder completamente.
+  hideBranding    Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  editions Edition[]
+  access   UserEventAccess[]
+
+  @@map("events")
+}
+
+/// Uma edição/ano de um evento (ex.: SetExpo 2025, SetExpo 2026).
+model Edition {
+  id                  String   @id @default(cuid())
+  eventId             String
+  ano                 Int
+  label               String
+  bannerUrl           String?
+  showTitleOverBanner Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  importedInvoices      ImportedInvoice[]
+  importedParticipantes ImportedParticipante[]
+
+  @@unique([eventId, ano])
+  @@map("editions")
+}
+
+/// Duplicata vinda do "modo planilha" — persistida pra não precisar reimportar
+/// toda vez que alguém abre o dashboard. `sourceFile` identifica de qual
+/// arquivo a linha veio; reimportar o mesmo arquivo substitui só as linhas
+/// dele (ver rota /api/financeiro/import).
+model ImportedInvoice {
+  id         String   @id @default(cuid())
+  editionId  String
+  sourceFile String
+  numero     String
+  cliente    String
+  cnpj       String
+  vencimento String
+  pagamento  String?
+  forma      String
+  valor      Float
+  status     String
+  createdAt  DateTime @default(now())
+
+  edition Edition @relation(fields: [editionId], references: [id], onDelete: Cascade)
+
+  @@index([editionId])
+  @@index([editionId, sourceFile])
+  @@map("imported_invoices")
+}
+
+/// Participante de credenciamento vindo do "modo planilha" — mesmo esquema
+/// de persistência do ImportedInvoice.
+model ImportedParticipante {
+  id            String   @id @default(cuid())
+  editionId     String
+  sourceFile    String
+  nome          String
+  documento     String
+  categoria     String
+  credenciadoEm String?
+  checkinEm     String?
+  status        String
+  createdAt     DateTime @default(now())
+
+  edition Edition @relation(fields: [editionId], references: [id], onDelete: Cascade)
+
+  @@index([editionId])
+  @@index([editionId, sourceFile])
+  @@map("imported_participantes")
+}
+
+/// Vínculo usuário → evento — dá acesso a TODAS as edições daquele evento.
+/// A maioria dos usuários tem só 1 vínculo; admins enxergam tudo independente
+/// de vínculo (ver `isAdmin` em User).
+model UserEventAccess {
+  id        String   @id @default(cuid())
+  userId    String
+  eventId   String
+  createdAt DateTime @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, eventId])
+  @@map("user_event_access")
+}
+
+/// Token de uso único para o fluxo de "esqueci minha senha".
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
