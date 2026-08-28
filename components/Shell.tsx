@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useEvent } from "@/lib/eventContext";
 import { useI18n } from "@/lib/i18n";
 import { useAuth } from "@/lib/auth";
@@ -57,6 +57,16 @@ function EventSwitcher() {
   );
 }
 
+function hexToRgba(hex: string, alpha: number): string | null {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!m) return null;
+  const int = parseInt(m[1], 16);
+  const r = (int >> 16) & 255;
+  const g = (int >> 8) & 255;
+  const b = int & 255;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 function PrefRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="pref-row">
@@ -74,6 +84,19 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   const { session, isAdmin, logout } = useAuth();
   const { event } = useEvent();
   const hideBranding = !!event?.hideBranding;
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const color = event?.accentColor;
+    if (color) {
+      const soft = hexToRgba(color, theme === "dark" ? 0.14 : 0.22);
+      root.style.setProperty("--accent", color);
+      if (soft) root.style.setProperty("--accent-soft", soft);
+    } else {
+      root.style.removeProperty("--accent");
+      root.style.removeProperty("--accent-soft");
+    }
+  }, [event?.accentColor, theme]);
 
   const NAV = [
     { href: "/", Icon: IconOverview, label: t("shell.nav.overview") },

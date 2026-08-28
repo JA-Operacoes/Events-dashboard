@@ -14,6 +14,8 @@ export type EventOption = {
   logoUrl?: string | null;
   /** Alguns eventos contratados não querem nenhuma referência à empresa contratada visível. */
   hideBranding?: boolean;
+  /** Cor primária (hex) do cliente — substitui --accent/--accent-soft do tema enquanto ele está selecionado. */
+  accentColor?: string | null;
 };
 
 /**

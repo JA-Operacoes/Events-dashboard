@@ -9,6 +9,7 @@ import { ConnChip, Empty, EmptyTableRow, KpiRow, money, int } from "@/components
 import { SpreadsheetImportFinanceiro } from "@/components/SpreadsheetImport";
 import { aggregateFinanceiro, mergeImportedInvoices } from "@/lib/spreadsheetImport";
 import { Donut, BarList, StatusBars, LineChart } from "@/components/charts";
+import { getCached, setCached } from "@/lib/pageCache";
 
 export default function FinanceiroPage() {
   const { eventId, editionId, event, edition } = useEvent();
@@ -23,7 +24,12 @@ export default function FinanceiroPage() {
   const [tableSearch, setTableSearch] = useState("");
   const [connState, setConnState] = useState<"pending" | "connected" | "error">("pending");
   const [apiData, setApiData] = useState<FinanceiroData | null>(null);
-  const [importedInvoices, setImportedInvoices] = useState<Invoice[]>([]);
+  // lê o último resultado conhecido pra essa edição na hora — evita a tela
+  // "piscar" vazia sempre que você sai da aba e volta; loadImported() abaixo
+  // ainda busca a versão atual por baixo dos panos.
+  const [importedInvoices, setImportedInvoices] = useState<Invoice[]>(
+    () => getCached(`financeiro:${editionId}`) ?? []
+  );
   const hasImported = importedInvoices.length > 0;
   const [kpiOverrides, setKpiOverrides] = useState<Partial<FinanceiroData["kpis"]>>({});
 
@@ -107,13 +113,21 @@ export default function FinanceiroPage() {
   async function loadImported() {
     if (!editionId) return;
     const res = await fetch(`/api/financeiro/import?editionId=${editionId}`);
-    if (res.ok) setImportedInvoices(await res.json());
+    if (res.ok) {
+      const invoices: Invoice[] = await res.json();
+      setImportedInvoices(invoices);
+      setCached(`financeiro:${editionId}`, invoices);
+    }
   }
 
   async function handleImported(invoices: Invoice[], fileName: string) {
     if (!editionId) return;
     // otimista: mostra na hora, e persiste em paralelo — se falhar, recarrega do banco pra não ficar dessincronizado.
-    setImportedInvoices((prev) => mergeImportedInvoices(prev, invoices, fileName));
+    setImportedInvoices((prev) => {
+      const next = mergeImportedInvoices(prev, invoices, fileName);
+      setCached(`financeiro:${editionId}`, next);
+      return next;
+    });
     const res = await fetch("/api/financeiro/import", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -124,7 +138,11 @@ export default function FinanceiroPage() {
 
   async function removeImportedFile(fileName: string) {
     if (!editionId) return;
-    setImportedInvoices((prev) => prev.filter((inv) => inv.sourceFile !== fileName));
+    setImportedInvoices((prev) => {
+      const next = prev.filter((inv) => inv.sourceFile !== fileName);
+      setCached(`financeiro:${editionId}`, next);
+      return next;
+    });
     const res = await fetch(`/api/financeiro/import?editionId=${editionId}&sourceFile=${encodeURIComponent(fileName)}`, {
       method: "DELETE",
     });
@@ -162,9 +180,11 @@ export default function FinanceiroPage() {
   }
 
   useEffect(() => {
-    setImportedInvoices([]); // evita mostrar dados da edição anterior por um instante enquanto troca
+    // mostra o que já se sabe dessa edição na hora (cache ou vazio) em vez de
+    // sempre zerar — evita a "piscada" ao trocar de edição/voltar pra aba.
+    setImportedInvoices(getCached<Invoice[]>(`financeiro:${editionId}`) ?? []);
     setTableSearch("");
-    loadImported(); // busca o que já foi importado e salvo pra essa edição
+    loadImported(); // revalida com o banco por baixo dos panos
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eventId, editionId, period, method]);

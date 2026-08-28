@@ -43,6 +43,10 @@ model Event {
   /// Alguns eventos contratados não querem nenhuma referência visível à
   /// empresa contratada (Portal JA) — liga isso pra esconder completamente.
   hideBranding    Boolean  @default(false)
+  /// Cor primária (hex, ex.: "#e53939") pra deixar a cara do cliente —
+  /// substitui a cor de destaque padrão do tema enquanto esse evento está
+  /// selecionado. Nulo = usa a cor padrão do template.
+  accentColor     String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 

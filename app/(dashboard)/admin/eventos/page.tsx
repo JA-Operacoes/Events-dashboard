@@ -11,6 +11,7 @@ type EventRow = {
   editions: Edition[];
   logoUrl: string | null;
   hideBranding: boolean;
+  accentColor: string | null;
   _count: { access: number };
 };
 
@@ -21,7 +22,7 @@ export default function AdminEventosPage() {
   const [loading, setLoading] = useState(true);
   const [novoNome, setNovoNome] = useState("");
   const [editionForms, setEditionForms] = useState<Record<string, { ano: string; label: string }>>({});
-  const [brandForms, setBrandForms] = useState<Record<string, { logoUrl: string; hideBranding: boolean }>>({});
+  const [brandForms, setBrandForms] = useState<Record<string, { logoUrl: string; hideBranding: boolean; accentColor: string }>>({});
   const [savingBrand, setSavingBrand] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -33,7 +34,8 @@ export default function AdminEventosPage() {
     setBrandForms((prev) => {
       const next = { ...prev };
       for (const ev of data) {
-        if (!next[ev.id]) next[ev.id] = { logoUrl: ev.logoUrl ?? "", hideBranding: ev.hideBranding };
+        if (!next[ev.id])
+          next[ev.id] = { logoUrl: ev.logoUrl ?? "", hideBranding: ev.hideBranding, accentColor: ev.accentColor ?? "" };
       }
       return next;
     });
@@ -116,6 +118,19 @@ export default function AdminEventosPage() {
     refreshEvents(); // atualiza a sidebar na hora, sem precisar recarregar a página
   }
 
+  // Cor também é efeito imediato — igual ao toggle de marca — pra dar feedback
+  // visual instantâneo enquanto o admin escolhe a cor no picker.
+  async function handleAccentColorChange(eventId: string, accentColor: string) {
+    setBrandForms((prev) => ({ ...prev, [eventId]: { ...prev[eventId], accentColor } }));
+    await fetch(`/api/admin/events/${eventId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accentColor: accentColor || null }),
+    });
+    load();
+    refreshEvents();
+  }
+
   if (!isAdmin) {
     return (
       <div className="empty" style={{ marginTop: 40 }}>
@@ -172,7 +187,7 @@ export default function AdminEventosPage() {
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {events.map((ev) => {
-            const brand = brandForms[ev.id] ?? { logoUrl: "", hideBranding: false };
+            const brand = brandForms[ev.id] ?? { logoUrl: "", hideBranding: false, accentColor: "" };
             return (
               <div className="panel" key={ev.id}>
                 <div className="panel-head">
@@ -256,6 +271,24 @@ export default function AdminEventosPage() {
                     />
                     Ocultar completamente a marca do Portal JA para este evento
                   </label>
+
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14 }}>
+                    <input
+                      type="color"
+                      value={brand.accentColor || "#e53939"}
+                      onChange={(e) => handleAccentColorChange(ev.id, e.target.value)}
+                      style={{ width: 40, height: 32, padding: 2, border: "1px solid var(--line)", borderRadius: 6, background: "none", cursor: "pointer" }}
+                      aria-label="Cor primária do evento"
+                    />
+                    <span style={{ fontSize: 12.5, color: "var(--ink-dim)" }}>
+                      Cor primária deste evento (substitui a cor padrão do template)
+                    </span>
+                    {brand.accentColor && (
+                      <button className="btn" type="button" onClick={() => handleAccentColorChange(ev.id, "")}>
+                        Usar cor padrão
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             );

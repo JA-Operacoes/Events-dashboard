@@ -23,6 +23,7 @@ export async function GET(req: NextRequest) {
     name: ev.nome,
     logoUrl: ev.logoUrl,
     hideBranding: ev.hideBranding,
+    accentColor: ev.accentColor,
     editions: ev.editions.map((ed) => ({
       id: ed.id,
       year: ed.ano,

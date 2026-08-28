@@ -17,6 +17,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   }
   if (body.logoUrl !== undefined) data.logoUrl = body.logoUrl ? String(body.logoUrl).trim() : null;
   if (body.hideBranding !== undefined) data.hideBranding = !!body.hideBranding;
+  if (body.accentColor !== undefined) data.accentColor = body.accentColor ? String(body.accentColor).trim() : null;
 
   const event = await prisma.event.update({ where: { id }, data });
   return NextResponse.json(event);

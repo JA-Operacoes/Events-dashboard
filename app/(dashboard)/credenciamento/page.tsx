@@ -9,6 +9,7 @@ import { ConnChip, Empty, EmptyTableRow, KpiRow, int, pct } from "@/components/u
 import { SpreadsheetImportCredenciamento } from "@/components/SpreadsheetImport";
 import { aggregateCredenciamento, mergeImportedParticipantes } from "@/lib/spreadsheetImport";
 import { Donut, StatusBars, LineChart } from "@/components/charts";
+import { getCached, setCached } from "@/lib/pageCache";
 
 export default function CredenciamentoPage() {
   const { eventId, editionId, event, edition } = useEvent();
@@ -20,7 +21,9 @@ export default function CredenciamentoPage() {
   const [search, setSearch] = useState("");
   const [connState, setConnState] = useState<"pending" | "connected" | "error">("pending");
   const [apiData, setApiData] = useState<CredenciamentoData | null>(null);
-  const [importedParticipantes, setImportedParticipantes] = useState<Participante[]>([]);
+  const [importedParticipantes, setImportedParticipantes] = useState<Participante[]>(
+    () => getCached(`credenciamento:${editionId}`) ?? []
+  );
   const hasImported = importedParticipantes.length > 0;
   const [kpiOverrides, setKpiOverrides] = useState<Partial<CredenciamentoData["kpis"]>>({});
 
@@ -47,12 +50,20 @@ export default function CredenciamentoPage() {
   async function loadImported() {
     if (!editionId) return;
     const res = await fetch(`/api/credenciamento/import?editionId=${editionId}`);
-    if (res.ok) setImportedParticipantes(await res.json());
+    if (res.ok) {
+      const participantes: Participante[] = await res.json();
+      setImportedParticipantes(participantes);
+      setCached(`credenciamento:${editionId}`, participantes);
+    }
   }
 
   async function handleImported(participantes: Participante[], fileName: string) {
     if (!editionId) return;
-    setImportedParticipantes((prev) => mergeImportedParticipantes(prev, participantes, fileName));
+    setImportedParticipantes((prev) => {
+      const next = mergeImportedParticipantes(prev, participantes, fileName);
+      setCached(`credenciamento:${editionId}`, next);
+      return next;
+    });
     const res = await fetch("/api/credenciamento/import", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -63,7 +74,11 @@ export default function CredenciamentoPage() {
 
   async function removeImportedFile(fileName: string) {
     if (!editionId) return;
-    setImportedParticipantes((prev) => prev.filter((p) => p.sourceFile !== fileName));
+    setImportedParticipantes((prev) => {
+      const next = prev.filter((p) => p.sourceFile !== fileName);
+      setCached(`credenciamento:${editionId}`, next);
+      return next;
+    });
     const res = await fetch(`/api/credenciamento/import?editionId=${editionId}&sourceFile=${encodeURIComponent(fileName)}`, {
       method: "DELETE",
     });
@@ -97,7 +112,7 @@ export default function CredenciamentoPage() {
   }
 
   useEffect(() => {
-    setImportedParticipantes([]);
+    setImportedParticipantes(getCached<Participante[]>(`credenciamento:${editionId}`) ?? []);
     loadImported();
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
