@@ -27,6 +27,11 @@ export type Invoice = {
   forma: string;
   valor: number;
   status: InvoiceStatus;
+  /** Rateio de contas/centro de custo — opcionais, algumas planilhas de ERP trazem até 4 por duplicata. */
+  centroCusto?: string | null;
+  conta1?: string | null;
+  conta2?: string | null;
+  conta3?: string | null;
   /** Preenchido apenas no modo planilha — identifica qual arquivo importado gerou esta linha. */
   sourceFile?: string;
 };
@@ -50,6 +55,8 @@ export type FinanceiroData = {
   paymentMethods: Array<{ label: string; value: number }>;
   topClients: Array<{ name: string; value: number }>;
   statusBreakdown: Array<{ label: InvoiceStatus; value: number }>;
+  /** Rateio por conta/centro de custo — só existe quando a planilha importada traz alguma coluna "Conta". */
+  contas: Array<{ name: string; value: number }>;
   invoices: Invoice[];
 };
 

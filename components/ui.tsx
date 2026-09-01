@@ -158,6 +158,39 @@ export function EmptyTableRow({ colSpan, title, desc }: { colSpan: number; title
   );
 }
 
+/**
+ * Checkbox custom (baseado em https://uiverse.io/andrew-manzyk, por
+ * andrew-manzyk) — substitui o `<input type="checkbox">` nativo em todo o
+ * app. Cores vêm das variáveis de tema (--ink/--accent) em vez de fixas,
+ * pra respeitar dark/light automaticamente.
+ */
+export function Checkbox({
+  checked,
+  onChange,
+  label,
+  className,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  label?: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <label className={`ja-checkbox${className ? ` ${className}` : ""}`}>
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      <div className="ja-checkbox-mark">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+          <g fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="1.5" y="1.5" width="21" height="21" rx="5" ry="5" strokeWidth="3" />
+            <polyline points="7 10 12 16 22 2" strokeWidth="4" />
+          </g>
+        </svg>
+        {label && <span>{label}</span>}
+      </div>
+    </label>
+  );
+}
+
 export function ConnChip({ state }: { state: "pending" | "connected" | "error" }) {
   const { t } = useI18n();
   const label = state === "connected" ? t("common.connected") : state === "error" ? t("common.error") : t("common.pending");

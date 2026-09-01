@@ -20,9 +20,18 @@ export async function GET(req: NextRequest) {
     forma: r.forma,
     valor: r.valor,
     status: r.status as Invoice["status"],
+    centroCusto: r.centroCusto,
+    conta1: r.conta1,
+    conta2: r.conta2,
+    conta3: r.conta3,
     sourceFile: r.sourceFile,
   }));
-  return NextResponse.json(invoices);
+  // exposto via header (não no corpo) pra não quebrar o contrato `Invoice[]`
+  // que o resto do app já espera dessa rota.
+  const lastUpdatedAt = rows.reduce((max, r) => (r.createdAt > max ? r.createdAt : max), new Date(0));
+  const res = NextResponse.json(invoices);
+  if (rows.length) res.headers.set("X-Last-Updated", lastUpdatedAt.toISOString());
+  return res;
 }
 
 export async function POST(req: NextRequest) {
@@ -53,6 +62,10 @@ export async function POST(req: NextRequest) {
         forma: inv.forma,
         valor: inv.valor,
         status: inv.status,
+        centroCusto: inv.centroCusto ?? null,
+        conta1: inv.conta1 ?? null,
+        conta2: inv.conta2 ?? null,
+        conta3: inv.conta3 ?? null,
       })),
     }),
   ]);

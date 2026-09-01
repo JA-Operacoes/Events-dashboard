@@ -15,6 +15,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     if (!nome) return NextResponse.json({ error: "Nome é obrigatório" }, { status: 400 });
     data.nome = nome;
   }
+  if (body.grupo !== undefined) data.grupo = body.grupo ? String(body.grupo).trim() : null;
   if (body.logoUrl !== undefined) data.logoUrl = body.logoUrl ? String(body.logoUrl).trim() : null;
   if (body.hideBranding !== undefined) data.hideBranding = !!body.hideBranding;
   if (body.accentColor !== undefined) data.accentColor = body.accentColor ? String(body.accentColor).trim() : null;

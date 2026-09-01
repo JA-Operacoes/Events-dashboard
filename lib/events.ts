@@ -9,6 +9,8 @@ export type Edition = {
 export type EventOption = {
   id: string;
   name: string;
+  /** Agrupa sub-eventos do mesmo cliente/marca (ex.: "Beauty Fair" agrupa Beauty BH, Beauty Show...). */
+  grupo?: string | null;
   editions: Edition[];
   /** Marca própria do evento (multi-tenant) — substitui a logo padrão na sidebar enquanto ele está selecionado. */
   logoUrl?: string | null;

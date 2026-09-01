@@ -20,7 +20,10 @@ export async function GET(req: NextRequest) {
     status: r.status as Participante["status"],
     sourceFile: r.sourceFile,
   }));
-  return NextResponse.json(participantes);
+  const lastUpdatedAt = rows.reduce((max, r) => (r.createdAt > max ? r.createdAt : max), new Date(0));
+  const res = NextResponse.json(participantes);
+  if (rows.length) res.headers.set("X-Last-Updated", lastUpdatedAt.toISOString());
+  return res;
 }
 
 export async function POST(req: NextRequest) {

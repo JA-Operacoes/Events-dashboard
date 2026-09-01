@@ -13,6 +13,7 @@
  */
 
 import * as XLSX from "xlsx";
+import * as cptable from "xlsx/dist/cpexcel.full.mjs";
 import type {
   FinanceiroData,
   Invoice,
@@ -22,10 +23,33 @@ import type {
   CredenciamentoStatus,
 } from "./dataSource";
 
+// .xls binário antigo (BIFF) guarda texto acentuado num codepage (ex.: CP1252),
+// não em UTF-8 — sem a tabela de codepages carregada, o SheetJS decodifica
+// errado e caracteres acentuados viram símbolos (ex.: "Bancário" -> "Bancℵo").
+(XLSX as unknown as { set_cptable: (table: unknown) => void }).set_cptable(cptable);
+
 export type SheetTable = {
   headers: string[];
   rows: string[][];
 };
+
+// Alguns ERPs exportam relatório em HTML puro com extensão .xls (não é um
+// binário Excel de verdade). Detectamos pela assinatura "<" nos primeiros
+// bytes — arquivos Excel reais (BIFF/ZIP) nunca começam assim.
+function sniffIsHtml(bytes: Uint8Array): boolean {
+  const head = new TextDecoder("ascii").decode(bytes.slice(0, 512)).trimStart();
+  return head.startsWith("<");
+}
+
+// Esses HTMLs geralmente não declaram (ou mentem sobre) o charset, mas na
+// prática saem em Windows-1252/ISO-8859-1 — daí o texto acentuado virar
+// símbolos quando decodificado como UTF-8 (ex.: "Bancário" -> "Bancℵo").
+// Se a página realmente declarar utf-8, respeitamos isso.
+function decodeHtmlBytes(bytes: Uint8Array): string {
+  const head = new TextDecoder("utf-8").decode(bytes.slice(0, 1024));
+  const declaresUtf8 = /charset\s*=\s*["']?utf-8/i.test(head);
+  return new TextDecoder(declaresUtf8 ? "utf-8" : "windows-1252").decode(bytes);
+}
 
 export function parseSpreadsheetFile(file: File): Promise<SheetTable> {
   return new Promise((resolve, reject) => {
@@ -34,7 +58,9 @@ export function parseSpreadsheetFile(file: File): Promise<SheetTable> {
     reader.onload = () => {
       try {
         const data = new Uint8Array(reader.result as ArrayBuffer);
-        const wb = XLSX.read(data, { type: "array" });
+        const wb = sniffIsHtml(data)
+          ? XLSX.read(decodeHtmlBytes(data), { type: "string" })
+          : XLSX.read(data, { type: "array" });
         const sheet = wb.Sheets[wb.SheetNames[0]];
         const matrix: unknown[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" });
 
@@ -68,6 +94,10 @@ export const FINANCEIRO_FIELDS = [
   { key: "cnpj", label: "CNPJ", required: false },
   { key: "vencimento", label: "Data de vencimento", required: false },
   { key: "pagamento", label: "Data de pagamento", required: false },
+  { key: "centroCusto", label: "Centro de custo", required: false },
+  { key: "conta1", label: "Conta nível 1", required: false },
+  { key: "conta2", label: "Conta nível 2", required: false },
+  { key: "conta3", label: "Conta nível 3", required: false },
 ] as const;
 
 export type FinanceiroFieldKey = (typeof FINANCEIRO_FIELDS)[number]["key"];
@@ -167,6 +197,10 @@ const FINANCEIRO_FIELD_KEYWORDS: { key: FinanceiroFieldKey; patterns: RegExp[] }
   { key: "status", patterns: [/status/, /situa[cç][aã]o/] },
   { key: "valor", patterns: [/valor/, /montante/, /total/, /amount/] },
   { key: "cliente", patterns: [/empresa/, /cliente/, /raz[aã]o social/, /expositor/, /client/] },
+  { key: "centroCusto", patterns: [/centro.*custo/, /cost.*center/] },
+  { key: "conta1", patterns: [/^conta$/, /^conta ?1$/, /^conta ?n[ií]vel ?1$/] },
+  { key: "conta2", patterns: [/^conta ?2$/, /^conta ?n[ií]vel ?2$/] },
+  { key: "conta3", patterns: [/^conta ?3$/, /^conta ?n[ií]vel ?3$/] },
 ];
 
 export function suggestFinanceiroMapping(headers: string[]): ColumnMapping<FinanceiroFieldKey> {
@@ -214,6 +248,10 @@ export function mapRowsToInvoices(
   const iCnpj = idx("cnpj");
   const iVenc = idx("vencimento");
   const iPag = idx("pagamento");
+  const iCentroCusto = idx("centroCusto");
+  const iConta1 = idx("conta1");
+  const iConta2 = idx("conta2");
+  const iConta3 = idx("conta3");
 
   return table.rows.map((r, i) => {
     const rawStatus = iStatus >= 0 ? r[iStatus] : "";
@@ -226,6 +264,10 @@ export function mapRowsToInvoices(
       forma: iForma >= 0 ? r[iForma] : "",
       valor: iValor >= 0 ? parseValor(r[iValor]) : 0,
       status: statusMapping[rawStatus] ?? "pendente",
+      centroCusto: iCentroCusto >= 0 && r[iCentroCusto] ? r[iCentroCusto] : null,
+      conta1: iConta1 >= 0 && r[iConta1] ? r[iConta1] : null,
+      conta2: iConta2 >= 0 && r[iConta2] ? r[iConta2] : null,
+      conta3: iConta3 >= 0 && r[iConta3] ? r[iConta3] : null,
       sourceFile,
     };
   });
@@ -254,6 +296,16 @@ export function aggregateFinanceiro(invoices: Invoice[]): FinanceiroData {
 
   const statusTotals = new Map<InvoiceStatus, number>();
   for (const inv of invoices) statusTotals.set(inv.status, (statusTotals.get(inv.status) ?? 0) + 1);
+
+  // opcional — só populado quando a planilha traz colunas de rateio (Conta/Conta 2/Conta 3).
+  // uma duplicata pode aparecer em mais de uma conta ao mesmo tempo (rateio entre centros de
+  // custo), então o valor dela entra na soma de cada conta que ela referencia.
+  const contaTotals = new Map<string, number>();
+  for (const inv of invoices) {
+    for (const conta of [inv.centroCusto, inv.conta1, inv.conta2, inv.conta3]) {
+      if (conta) contaTotals.set(conta, (contaTotals.get(conta) ?? 0) + inv.valor);
+    }
+  }
 
   // timeline e pontualidade só existem quando a planilha traz vencimento/pagamento —
   // opcionais no mapeamento, então ficam nulos/vazios se não vierem preenchidos.
@@ -296,6 +348,7 @@ export function aggregateFinanceiro(invoices: Invoice[]): FinanceiroData {
       .sort((a, b) => b.value - a.value)
       .slice(0, 10),
     statusBreakdown: Array.from(statusTotals, ([label, value]) => ({ label, value })),
+    contas: Array.from(contaTotals, ([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value),
     invoices,
   };
 }

@@ -8,11 +8,13 @@ import { SignJWT, jwtVerify } from "jose";
 
 export const SESSION_COOKIE = "session";
 
+export type UserRole = "admin" | "funcionario" | "usuario";
+
 export type SessionPayload = {
   email: string;
-  isAdmin: boolean;
-  /** "all" pra admins; lista de ids de Event pra usuários comuns. */
-  allowedEventIds: "all" | string[];
+  role: UserRole;
+  /** "all" pra admins; lista de ids de Edition (não de Event) pros demais papéis. */
+  allowedEditionIds: "all" | string[];
 };
 
 function getSecret() {
@@ -34,8 +36,8 @@ export async function verifySession(token: string): Promise<SessionPayload | nul
     const { payload } = await jwtVerify(token, getSecret());
     return {
       email: String(payload.email),
-      isAdmin: !!payload.isAdmin,
-      allowedEventIds: payload.allowedEventIds as "all" | string[],
+      role: payload.role as UserRole,
+      allowedEditionIds: payload.allowedEditionIds as "all" | string[],
     };
   } catch {
     return null;

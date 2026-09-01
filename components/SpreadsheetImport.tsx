@@ -137,6 +137,7 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
       {!table && (
         <div className="import-upload">
           <input type="file" accept=".xlsx,.xls,.csv" onChange={handleFile} />
+          <div className="import-hint">Formatos aceitos: .xlsx, .xls ou .csv</div>
           {error && <div className="import-error">{error}</div>}
         </div>
       )}

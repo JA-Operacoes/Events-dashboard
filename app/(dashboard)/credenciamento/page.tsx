@@ -10,17 +10,20 @@ import { SpreadsheetImportCredenciamento } from "@/components/SpreadsheetImport"
 import { aggregateCredenciamento, mergeImportedParticipantes } from "@/lib/spreadsheetImport";
 import { Donut, StatusBars, LineChart } from "@/components/charts";
 import { getCached, setCached } from "@/lib/pageCache";
+import { matchesPeriod, formatRelativeTime } from "@/lib/period";
+import { notifySuccess, notifyWarning, notifyError } from "@/lib/swal";
 
 export default function CredenciamentoPage() {
   const { eventId, editionId, event, edition } = useEvent();
   const { t } = useI18n();
-  const { isAdmin } = useAuth();
+  const { canManageData } = useAuth();
   const [period, setPeriod] = useState<CredenciamentoFilters["period"]>("all");
   const [categoria, setCategoria] = useState<CredenciamentoFilters["categoria"]>("all");
   const [statusFilter, setStatusFilter] = useState<CredenciamentoFilters["status"]>("all");
   const [search, setSearch] = useState("");
   const [connState, setConnState] = useState<"pending" | "connected" | "error">("pending");
   const [apiData, setApiData] = useState<CredenciamentoData | null>(null);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
   const [importedParticipantes, setImportedParticipantes] = useState<Participante[]>(
     () => getCached(`credenciamento:${editionId}`) ?? []
   );
@@ -28,14 +31,22 @@ export default function CredenciamentoPage() {
   const [kpiOverrides, setKpiOverrides] = useState<Partial<CredenciamentoData["kpis"]>>({});
 
   const rawParticipantes = apiData?.participantes ?? importedParticipantes;
+
+  const categorias = useMemo(
+    () => Array.from(new Set(rawParticipantes.map((p) => p.categoria).filter(Boolean))).sort((a, b) => a.localeCompare(b, "pt-BR")),
+    [rawParticipantes]
+  );
+
   const filteredParticipantes = useMemo(() => {
     const term = search.trim().toLowerCase();
     return rawParticipantes.filter((p) => {
       if (statusFilter !== "all" && p.status !== statusFilter) return false;
+      if (categoria !== "all" && p.categoria !== categoria) return false;
+      if (!matchesPeriod(p.credenciadoEm, period)) return false;
       if (term && !`${p.nome} ${p.documento}`.toLowerCase().includes(term)) return false;
       return true;
     });
-  }, [rawParticipantes, statusFilter, search]);
+  }, [rawParticipantes, statusFilter, categoria, period, search]);
 
   const data = apiData || hasImported ? aggregateCredenciamento(filteredParticipantes) : null;
 
@@ -54,11 +65,15 @@ export default function CredenciamentoPage() {
       const participantes: Participante[] = await res.json();
       setImportedParticipantes(participantes);
       setCached(`credenciamento:${editionId}`, participantes);
+      setLastUpdatedAt(res.headers.get("X-Last-Updated"));
     }
   }
 
   async function handleImported(participantes: Participante[], fileName: string) {
-    if (!editionId) return;
+    if (!editionId) {
+      notifyWarning("Selecione uma edição primeiro", "Escolha (ou crie) uma edição do evento antes de importar a planilha — sem isso não há onde salvar os dados.");
+      return;
+    }
     setImportedParticipantes((prev) => {
       const next = mergeImportedParticipantes(prev, participantes, fileName);
       setCached(`credenciamento:${editionId}`, next);
@@ -69,7 +84,12 @@ export default function CredenciamentoPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ editionId, sourceFile: fileName, participantes }),
     });
-    if (!res.ok) loadImported();
+    if (!res.ok) {
+      loadImported();
+      notifyError("Falha ao importar planilha", "Os dados não foram salvos — tente novamente em instantes.");
+      return;
+    }
+    notifySuccess("Planilha importada", `${participantes.length} linha(s) de "${fileName}" foram salvas.`);
   }
 
   async function removeImportedFile(fileName: string) {
@@ -128,16 +148,22 @@ export default function CredenciamentoPage() {
           </div>
         </div>
         <div className="actions">
-          {hasImported && !apiData && <span className="import-badge">dados de planilha importada</span>}
-          <ConnChip state={connState} />
-          {!apiData && <SpreadsheetImportCredenciamento eventId={eventId} onImported={handleImported} />}
-          <button className="btn primary" type="button" onClick={load}>
-            {t("common.sync")}
-          </button>
+          {canManageData && hasImported && !apiData && <span className="import-badge">dados de planilha importada</span>}
+          {canManageData ? (
+            <ConnChip state={connState} />
+          ) : (
+            lastUpdatedAt && <span className="last-updated-chip">atualizado {formatRelativeTime(lastUpdatedAt)}</span>
+          )}
+          {canManageData && !apiData && <SpreadsheetImportCredenciamento eventId={eventId} onImported={handleImported} />}
+          {canManageData && (
+            <button className="btn primary" type="button" onClick={load}>
+              {t("common.sync")}
+            </button>
+          )}
         </div>
       </div>
 
-      {!apiData && importedFiles.length > 0 && (
+      {canManageData && !apiData && importedFiles.length > 0 && (
         <div className="import-files-bar">
           <span>Arquivos importados:</span>
           {importedFiles.map(([name, count]) => (
@@ -163,6 +189,11 @@ export default function CredenciamentoPage() {
           <button className={categoria === "all" ? "on" : ""} onClick={() => setCategoria("all")}>
             {t("common.allCategories")}
           </button>
+          {categorias.map((c) => (
+            <button key={c} className={categoria === c ? "on" : ""} onClick={() => setCategoria(c)}>
+              {c}
+            </button>
+          ))}
         </div>
         <div className="seg">
           {(["all", "credenciado", "pendente", "cancelado"] as const).map((v) => (
@@ -178,8 +209,8 @@ export default function CredenciamentoPage() {
 
       <KpiRow
         defs={KPI_DEFS}
-        values={isAdmin ? { ...data?.kpis, ...kpiOverrides } : data?.kpis}
-        editable={isAdmin}
+        values={canManageData ? { ...data?.kpis, ...kpiOverrides } : data?.kpis}
+        editable={canManageData}
         onEditValue={(key, v) => setKpiOverrides((prev) => ({ ...prev, [key]: v }))}
       />
 

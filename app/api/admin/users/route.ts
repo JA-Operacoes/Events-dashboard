@@ -3,6 +3,12 @@ import { prisma } from "@/lib/prisma";
 import { hashPassword } from "@/lib/password";
 import { requireAdmin, isResponse } from "@/lib/serverAuth";
 
+const VALID_ROLES = ["admin", "funcionario", "usuario"] as const;
+type Role = (typeof VALID_ROLES)[number];
+function parseRole(v: unknown): Role {
+  return VALID_ROLES.includes(v as Role) ? (v as Role) : "usuario";
+}
+
 export async function GET(req: NextRequest) {
   const auth = await requireAdmin(req);
   if (isResponse(auth)) return auth;
@@ -12,9 +18,11 @@ export async function GET(req: NextRequest) {
     select: {
       id: true,
       email: true,
-      isAdmin: true,
+      role: true,
       createdAt: true,
-      eventAccess: { select: { event: { select: { id: true, nome: true } } } },
+      editionAccess: {
+        select: { edition: { select: { id: true, label: true, ano: true, event: { select: { id: true, nome: true } } } } },
+      },
     },
   });
   return NextResponse.json(users);
@@ -27,8 +35,8 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const email = String(body?.email ?? "").trim().toLowerCase();
   const password = String(body?.password ?? "");
-  const isAdmin = !!body?.isAdmin;
-  const eventIds: string[] = Array.isArray(body?.eventIds) ? body.eventIds : [];
+  const role = parseRole(body?.role);
+  const editionIds: string[] = Array.isArray(body?.editionIds) ? body.editionIds : [];
 
   if (!email || !email.includes("@")) return NextResponse.json({ error: "E-mail inválido" }, { status: 400 });
   if (password.length < 8) return NextResponse.json({ error: "Senha precisa ter ao menos 8 caracteres" }, { status: 400 });
@@ -40,10 +48,10 @@ export async function POST(req: NextRequest) {
       data: {
         email,
         passwordHash,
-        isAdmin,
-        eventAccess: { create: eventIds.map((eventId) => ({ eventId })) },
+        role,
+        editionAccess: { create: editionIds.map((editionId) => ({ editionId })) },
       },
-      select: { id: true, email: true, isAdmin: true, createdAt: true },
+      select: { id: true, email: true, role: true, createdAt: true },
     });
     return NextResponse.json(user, { status: 201 });
   } catch (err: any) {

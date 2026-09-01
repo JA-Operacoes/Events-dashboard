@@ -24,6 +24,8 @@ type AuthContextValue = {
   logout: () => void;
   requestPasswordReset: (email: string) => Promise<{ ok: true } | { ok: false; error: string }>;
   isAdmin: boolean;
+  /** admin ou funcionário — nível intermediário que mexe em dados (import/sync/KPI) mas não gerencia eventos/usuários. */
+  canManageData: boolean;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -74,7 +76,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     login,
     logout,
     requestPasswordReset,
-    isAdmin: session?.isAdmin ?? false,
+    isAdmin: session?.role === "admin",
+    canManageData: session?.role === "admin" || session?.role === "funcionario",
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

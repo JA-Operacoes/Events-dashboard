@@ -3,17 +3,96 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth";
 import { useEvent } from "@/lib/eventContext";
+import { Checkbox } from "@/components/ui";
+import { notifySuccess, notifyError, confirmDanger } from "@/lib/swal";
 
-type Edition = { id: string; ano: number; label: string };
+type Edition = { id: string; ano: number; label: string; _count: { access: number } };
 type EventRow = {
   id: string;
   nome: string;
+  grupo: string | null;
   editions: Edition[];
   logoUrl: string | null;
   hideBranding: boolean;
   accentColor: string | null;
-  _count: { access: number };
 };
+
+const SEM_GRUPO = "— sem grupo —";
+
+/**
+ * Select "grande" de grupo — lista os grupos que já existem (derivados dos
+ * eventos cadastrados) e uma opção "+ novo grupo" que revela um campo de
+ * texto pra criar um nome ainda inédito. Reaproveitado no form de criação e
+ * na configuração de cada evento já existente.
+ */
+function GroupSelect({
+  value,
+  options,
+  onChange,
+}: {
+  value: string;
+  options: string[];
+  onChange: (grupo: string) => void;
+}) {
+  const [creatingNew, setCreatingNew] = useState(false);
+  const [novo, setNovo] = useState("");
+
+  if (creatingNew) {
+    return (
+      <div style={{ display: "flex", gap: 8 }}>
+        <input
+          type="text"
+          autoFocus
+          placeholder="Nome do novo grupo (ex.: Beauty Fair)"
+          value={novo}
+          onChange={(e) => setNovo(e.target.value)}
+          onBlur={() => {
+            if (novo.trim()) onChange(novo.trim());
+            setCreatingNew(false);
+            setNovo("");
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              if (novo.trim()) onChange(novo.trim());
+              setCreatingNew(false);
+              setNovo("");
+            }
+            if (e.key === "Escape") {
+              setCreatingNew(false);
+              setNovo("");
+            }
+          }}
+          className="input"
+          style={{ flex: 1 }}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <select
+      className="input"
+      style={{ width: "100%" }}
+      value={value}
+      onChange={(e) => {
+        if (e.target.value === "__new__") {
+          setCreatingNew(true);
+          return;
+        }
+        onChange(e.target.value);
+      }}
+    >
+      <option value="">{SEM_GRUPO}</option>
+      {options.map((g) => (
+        <option key={g} value={g}>
+          {g}
+        </option>
+      ))}
+      <option value="__new__">+ Criar novo grupo…</option>
+    </select>
+  );
+}
 
 export default function AdminEventosPage() {
   const { isAdmin } = useAuth();
@@ -21,10 +100,97 @@ export default function AdminEventosPage() {
   const [events, setEvents] = useState<EventRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [novoNome, setNovoNome] = useState("");
+  const [novoGrupo, setNovoGrupo] = useState("");
   const [editionForms, setEditionForms] = useState<Record<string, { ano: string; label: string }>>({});
   const [brandForms, setBrandForms] = useState<Record<string, { logoUrl: string; hideBranding: boolean; accentColor: string }>>({});
-  const [savingBrand, setSavingBrand] = useState<string | null>(null);
+  const [uploadingLogo, setUploadingLogo] = useState<string | null>(null);
+  const [logoError, setLogoError] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+
+  function toggleExpanded(eventId: string) {
+    setExpanded((prev) => ({ ...prev, [eventId]: !prev[eventId] }));
+  }
+
+  const groupOptions = Array.from(new Set(events.map((ev) => ev.grupo).filter((g): g is string => !!g))).sort((a, b) =>
+    a.localeCompare(b, "pt-BR")
+  );
+
+  const filteredEvents = events.filter((ev) => {
+    const term = search.trim().toLowerCase();
+    if (!term) return true;
+    return ev.nome.toLowerCase().includes(term) || (ev.grupo ?? "").toLowerCase().includes(term);
+  });
+
+  // agrupa pra exibição — eventos sem grupo caem numa seção "sem grupo" no final.
+  const groupedEvents = Array.from(
+    filteredEvents
+      .reduce((map, ev) => {
+        const key = ev.grupo ?? "";
+        if (!map.has(key)) map.set(key, []);
+        map.get(key)!.push(ev);
+        return map;
+      }, new Map<string, EventRow[]>())
+      .entries()
+  ).sort(([a], [b]) => {
+    if (!a) return 1;
+    if (!b) return -1;
+    return a.localeCompare(b, "pt-BR");
+  });
+
+  const LOGO_WIDTH = 650;
+  const LOGO_HEIGHT = 200;
+  const LOGO_ACCEPT = ["image/png", "image/jpeg", "image/webp"];
+
+  async function handleLogoFile(eventId: string, file: File) {
+    setLogoError((prev) => ({ ...prev, [eventId]: "" }));
+    if (!LOGO_ACCEPT.includes(file.type)) {
+      const msg = "Formato inválido — envie PNG, JPEG ou WEBP";
+      setLogoError((prev) => ({ ...prev, [eventId]: msg }));
+      notifyError("Formato de imagem inválido", msg);
+      return;
+    }
+    // checagem client-side só pra feedback rápido; quem garante de verdade é o servidor
+    const dims = await new Promise<{ width: number; height: number } | null>((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
+      img.onerror = () => resolve(null);
+      img.src = URL.createObjectURL(file);
+    });
+    if (!dims || dims.width !== LOGO_WIDTH || dims.height !== LOGO_HEIGHT) {
+      const msg = `A imagem precisa ter exatamente ${LOGO_WIDTH}x${LOGO_HEIGHT}px (essa tem ${dims ? `${dims.width}x${dims.height}` : "tamanho desconhecido"})`;
+      setLogoError((prev) => ({ ...prev, [eventId]: msg }));
+      notifyError("Dimensões incorretas", msg);
+      return;
+    }
+
+    setUploadingLogo(eventId);
+    const body = new FormData();
+    body.append("file", file);
+    const res = await fetch(`/api/admin/events/${eventId}/logo`, { method: "POST", body });
+    setUploadingLogo(null);
+    if (!res.ok) {
+      const errMsg = (await res.json()).error ?? "Falha ao enviar a logo";
+      setLogoError((prev) => ({ ...prev, [eventId]: errMsg }));
+      notifyError("Falha ao enviar a logo", errMsg);
+      return;
+    }
+    const { logoUrl } = await res.json();
+    setBrandForms((prev) => ({ ...prev, [eventId]: { ...prev[eventId], logoUrl } }));
+    load();
+    refreshEvents();
+    notifySuccess("Logo atualizada");
+  }
+
+  async function handleRemoveLogo(eventId: string) {
+    setUploadingLogo(eventId);
+    await fetch(`/api/admin/events/${eventId}/logo`, { method: "DELETE" });
+    setUploadingLogo(null);
+    setBrandForms((prev) => ({ ...prev, [eventId]: { ...prev[eventId], logoUrl: "" } }));
+    load();
+    refreshEvents();
+  }
 
   async function load() {
     setLoading(true);
@@ -52,20 +218,26 @@ export default function AdminEventosPage() {
     const res = await fetch("/api/admin/events", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ nome: novoNome }),
+      body: JSON.stringify({ nome: novoNome, grupo: novoGrupo || null }),
     });
     if (!res.ok) {
-      setError((await res.json()).error ?? "Falha ao criar evento");
+      const msg = (await res.json()).error ?? "Falha ao criar evento";
+      setError(msg);
+      notifyError("Não foi possível criar o evento", msg);
       return;
     }
     setNovoNome("");
+    setNovoGrupo("");
     load();
+    notifySuccess("Evento criado", `"${novoNome}" já aparece na lista abaixo.`);
   }
 
   async function handleDeleteEvent(id: string) {
-    if (!confirm("Remover este evento e todas as edições/vínculos dele?")) return;
+    const ok = await confirmDanger("Remover este evento?", "Isso apaga também todas as edições e vínculos de acesso dele — não dá pra desfazer.");
+    if (!ok) return;
     await fetch(`/api/admin/events/${id}`, { method: "DELETE" });
     load();
+    notifySuccess("Evento removido");
   }
 
   async function handleCreateEdition(eventId: string) {
@@ -77,30 +249,22 @@ export default function AdminEventosPage() {
       body: JSON.stringify({ ano: Number(form.ano), label: form.label || form.ano }),
     });
     if (!res.ok) {
-      setError((await res.json()).error ?? "Falha ao criar edição");
+      const msg = (await res.json()).error ?? "Falha ao criar edição";
+      setError(msg);
+      notifyError("Não foi possível criar a edição", msg);
       return;
     }
     setEditionForms((prev) => ({ ...prev, [eventId]: { ano: "", label: "" } }));
+    notifySuccess("Edição criada");
     load();
   }
 
   async function handleDeleteEdition(id: string) {
-    if (!confirm("Remover esta edição?")) return;
+    const ok = await confirmDanger("Remover esta edição?", "Os dados financeiros/credenciamento importados pra ela também somem — não dá pra desfazer.");
+    if (!ok) return;
     await fetch(`/api/admin/editions/${id}`, { method: "DELETE" });
     load();
-  }
-
-  async function handleSaveBrand(eventId: string) {
-    setSavingBrand(eventId);
-    const form = brandForms[eventId];
-    await fetch(`/api/admin/events/${eventId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ logoUrl: form.logoUrl.trim() || null, hideBranding: form.hideBranding }),
-    });
-    setSavingBrand(null);
-    load();
-    refreshEvents();
+    notifySuccess("Edição removida");
   }
 
   // O toggle de ocultar marca aplica na hora (não precisa clicar em "Salvar
@@ -126,6 +290,19 @@ export default function AdminEventosPage() {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ accentColor: accentColor || null }),
+    });
+    load();
+    refreshEvents();
+  }
+
+  // Grupo é reassinalável a qualquer momento (efeito imediato, igual cor/marca) —
+  // permite tanto encaixar um evento existente num grupo quanto criar um novo grupo na hora.
+  async function handleGrupoChange(eventId: string, grupo: string) {
+    setEvents((prev) => prev.map((ev) => (ev.id === eventId ? { ...ev, grupo: grupo || null } : ev)));
+    await fetch(`/api/admin/events/${eventId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ grupo: grupo || null }),
     });
     load();
     refreshEvents();
@@ -157,22 +334,42 @@ export default function AdminEventosPage() {
             <p>cria só o evento — as edições você adiciona depois, na lista abaixo</p>
           </div>
         </div>
-        <form onSubmit={handleCreateEvent} style={{ display: "flex", gap: 10 }}>
-          <input
-            type="text"
-            placeholder="Nome do evento (ex.: SetExpo)"
-            value={novoNome}
-            onChange={(e) => setNovoNome(e.target.value)}
-            required
-            style={{ flex: 1 }}
-            className="input"
-          />
-          <button className="btn primary" type="submit">
-            Adicionar
-          </button>
+        <form onSubmit={handleCreateEvent} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ display: "flex", gap: 10 }}>
+            <input
+              type="text"
+              placeholder="Nome do evento (ex.: Beauty BH)"
+              value={novoNome}
+              onChange={(e) => setNovoNome(e.target.value)}
+              required
+              style={{ flex: 1 }}
+              className="input"
+            />
+            <button className="btn primary" type="submit">
+              Adicionar
+            </button>
+          </div>
+          <label style={{ display: "flex", flexDirection: "column", gap: 6, maxWidth: 740 }}>
+            <span style={{ fontSize: 11.5, color: "var(--ink-mute)" }}>
+              Grupo (opcional — agrupa sub-eventos do mesmo cliente/marca, ex.: "Beauty Fair" agrupa Beauty BH, Beauty
+              Show, Professional Fair RJ/BH)
+            </span>
+            <GroupSelect value={novoGrupo} options={groupOptions} onChange={setNovoGrupo} />
+          </label>
         </form>
         {error && <div className="auth-error" style={{ marginTop: 10 }}>{error}</div>}
       </div>
+
+      {!loading && events.length > 0 && (
+        <div className="search" style={{ marginBottom: 16, maxWidth: 340 }}>
+          <input
+            type="text"
+            placeholder="Buscar evento pelo nome ou grupo"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+      )}
 
       {loading ? (
         <div className="empty">
@@ -184,19 +381,41 @@ export default function AdminEventosPage() {
           <div className="g">▣</div>
           <strong>nenhum evento cadastrado ainda</strong>
         </div>
+      ) : !filteredEvents.length ? (
+        <div className="empty">
+          <div className="g">▣</div>
+          <strong>nenhum evento encontrado</strong>
+          <span>nenhum resultado para "{search}"</span>
+        </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {events.map((ev) => {
-            const brand = brandForms[ev.id] ?? { logoUrl: "", hideBranding: false, accentColor: "" };
-            return (
-              <div className="panel" key={ev.id}>
-                <div className="panel-head">
+        <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+          {groupedEvents.map(([grupo, evs]) => (
+            <div key={grupo || "__sem_grupo__"}>
+              <p className="section-label" style={{ margin: "0 0 10px" }}>
+                {grupo || SEM_GRUPO} <span style={{ fontWeight: 400 }}>({evs.length})</span>
+              </p>
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                {evs.map((ev) => {
+                  const brand = brandForms[ev.id] ?? { logoUrl: "", hideBranding: false, accentColor: "" };
+                  const isOpen = !!expanded[ev.id];
+                  return (
+                    <div className="panel" key={ev.id}>
+                <button
+                  type="button"
+                  className="panel-head accordion-toggle"
+                  onClick={() => toggleExpanded(ev.id)}
+                  aria-expanded={isOpen}
+                >
                   <div>
                     <h3>{ev.nome}</h3>
-                    <p>
-                      {ev.editions.length} edição(ões) · {ev._count.access} usuário(s) com acesso
-                    </p>
+                    <p>{ev.editions.length} edição(ões)</p>
                   </div>
+                  <span className="accordion-arrow">{isOpen ? "▾" : "▸"}</span>
+                </button>
+
+                {isOpen && (
+                  <>
+                <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
                   <button className="btn" type="button" onClick={() => handleDeleteEvent(ev.id)}>
                     Remover evento
                   </button>
@@ -207,7 +426,9 @@ export default function AdminEventosPage() {
                     <div className="status-row" key={ed.id}>
                       <span className="status-left">
                         <strong style={{ fontWeight: 600 }}>{ed.label}</strong>
-                        <span style={{ color: "var(--ink-mute)" }}>({ed.ano})</span>
+                        <span style={{ color: "var(--ink-mute)" }}>
+                          ({ed.ano}) · {ed._count.access} usuário(s) com acesso
+                        </span>
                       </span>
                       <button className="btn" type="button" onClick={() => handleDeleteEdition(ed.id)}>
                         ×
@@ -216,6 +437,11 @@ export default function AdminEventosPage() {
                   ))}
                   {!ev.editions.length && <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>sem edições ainda</span>}
                 </div>
+
+                <label style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 18, maxWidth: 340 }}>
+                  <span className="section-label">Grupo</span>
+                  <GroupSelect value={ev.grupo ?? ""} options={groupOptions} onChange={(g) => handleGrupoChange(ev.id, g)} />
+                </label>
 
                 <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
                   <input
@@ -247,30 +473,48 @@ export default function AdminEventosPage() {
                     Alguns eventos não querem nenhuma referência ao Portal JA visível — use a opção abaixo pra
                     esconder, ou coloque a logo do próprio evento no lugar.
                   </p>
-                  <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
-                    <input
-                      type="text"
-                      placeholder="URL da logo do evento (opcional)"
-                      value={brand.logoUrl}
-                      disabled={brand.hideBranding}
-                      onChange={(e) =>
-                        setBrandForms((prev) => ({ ...prev, [ev.id]: { ...prev[ev.id], logoUrl: e.target.value } }))
-                      }
-                      className="input"
-                      style={{ flex: 1 }}
-                    />
-                    <button className="btn" type="button" disabled={savingBrand === ev.id} onClick={() => handleSaveBrand(ev.id)}>
-                      {savingBrand === ev.id ? "Salvando…" : "Salvar marca"}
-                    </button>
+                  <p style={{ fontSize: 11, color: "var(--ink-mute)", margin: "0 0 8px" }}>
+                    Exige imagem exatamente {LOGO_WIDTH}x{LOGO_HEIGHT}px, em PNG, JPEG ou WEBP.
+                  </p>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
+                    {brand.logoUrl && (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={brand.logoUrl}
+                        alt=""
+                        style={{ height: 52, width: 169, objectFit: "contain", objectPosition: "left center", border: "1px solid var(--line)", borderRadius: 6, background: "var(--panel-2)" }}
+                      />
+                    )}
+                    <label className="btn" style={{ cursor: brand.hideBranding ? "not-allowed" : "pointer", opacity: brand.hideBranding ? 0.5 : 1 }}>
+                      {uploadingLogo === ev.id ? "Enviando…" : brand.logoUrl ? "Trocar logo" : "Enviar logo"}
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        disabled={brand.hideBranding || uploadingLogo === ev.id}
+                        style={{ display: "none" }}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          e.target.value = "";
+                          if (file) handleLogoFile(ev.id, file);
+                        }}
+                      />
+                    </label>
+                    {brand.logoUrl && (
+                      <button className="btn" type="button" disabled={uploadingLogo === ev.id} onClick={() => handleRemoveLogo(ev.id)}>
+                        Remover logo
+                      </button>
+                    )}
                   </div>
-                  <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "var(--ink-dim)" }}>
-                    <input
-                      type="checkbox"
-                      checked={brand.hideBranding}
-                      onChange={(e) => handleToggleHideBranding(ev.id, e.target.checked)}
-                    />
-                    Ocultar completamente a marca do Portal JA para este evento
-                  </label>
+                  {logoError[ev.id] && (
+                    <div className="auth-error" style={{ marginBottom: 10, fontSize: 12 }}>
+                      {logoError[ev.id]}
+                    </div>
+                  )}
+                  <Checkbox
+                    checked={brand.hideBranding}
+                    onChange={(checked) => handleToggleHideBranding(ev.id, checked)}
+                    label="Ocultar completamente a marca do Portal JA para este evento"
+                  />
 
                   <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14 }}>
                     <input
@@ -290,9 +534,14 @@ export default function AdminEventosPage() {
                     )}
                   </div>
                 </div>
+                  </>
+                )}
               </div>
-            );
-          })}
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </>

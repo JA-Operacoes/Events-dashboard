@@ -3,6 +3,9 @@ import { prisma } from "@/lib/prisma";
 import { hashPassword } from "@/lib/password";
 import { requireAdmin, isResponse } from "@/lib/serverAuth";
 
+const VALID_ROLES = ["admin", "funcionario", "usuario"] as const;
+type Role = (typeof VALID_ROLES)[number];
+
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requireAdmin(req);
   if (isResponse(auth)) return auth;
@@ -10,16 +13,16 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   const { id } = await params;
   const body = await req.json();
 
-  if (body.eventIds !== undefined) {
-    const eventIds: string[] = Array.isArray(body.eventIds) ? body.eventIds : [];
+  if (body.editionIds !== undefined) {
+    const editionIds: string[] = Array.isArray(body.editionIds) ? body.editionIds : [];
     await prisma.$transaction([
-      prisma.userEventAccess.deleteMany({ where: { userId: id } }),
-      prisma.userEventAccess.createMany({ data: eventIds.map((eventId) => ({ userId: id, eventId })) }),
+      prisma.userEditionAccess.deleteMany({ where: { userId: id } }),
+      prisma.userEditionAccess.createMany({ data: editionIds.map((editionId) => ({ userId: id, editionId })) }),
     ]);
   }
 
   const data: Record<string, unknown> = {};
-  if (body.isAdmin !== undefined) data.isAdmin = !!body.isAdmin;
+  if (body.role !== undefined && VALID_ROLES.includes(body.role)) data.role = body.role as Role;
   if (body.email !== undefined) {
     const email = String(body.email).trim().toLowerCase();
     if (!email.includes("@")) return NextResponse.json({ error: "E-mail inválido" }, { status: 400 });
@@ -48,8 +51,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     select: {
       id: true,
       email: true,
-      isAdmin: true,
-      eventAccess: { select: { event: { select: { id: true, nome: true } } } },
+      role: true,
+      editionAccess: {
+        select: { edition: { select: { id: true, label: true, ano: true, event: { select: { id: true, nome: true } } } } },
+      },
     },
   });
   return NextResponse.json(user);

@@ -17,7 +17,7 @@ export async function proxy(req: NextRequest) {
 
   if (isAdminApi) {
     if (!session) return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
-    if (!session.isAdmin) return NextResponse.json({ error: "Acesso restrito a administradores" }, { status: 403 });
+    if (session.role !== "admin") return NextResponse.json({ error: "Acesso restrito a administradores" }, { status: 403 });
     return NextResponse.next();
   }
 
@@ -27,7 +27,7 @@ export async function proxy(req: NextRequest) {
     return NextResponse.redirect(url);
   }
 
-  if (isAdminPage && !session.isAdmin) {
+  if (isAdminPage && session.role !== "admin") {
     const url = req.nextUrl.clone();
     url.pathname = "/";
     return NextResponse.redirect(url);

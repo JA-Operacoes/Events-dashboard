@@ -14,31 +14,53 @@ import Logo from "@/components/Logo";
 function EventSwitcher() {
   const { events, loading, event, edition, setEventId, setEditionId } = useEvent();
   const { t } = useI18n();
+  const { isAdmin } = useAuth();
   const [open, setOpen] = useState(false);
 
   if (loading) return <div className="pulse-card">{t("shell.loadingEvents")}</div>;
   if (!event) return <div className="pulse-card">{t("shell.noEvents")}</div>;
 
+  // usuário comum com só 1 evento não tem o que escolher — mostra fixo, sem
+  // dropdown; admin sempre vê o seletor porque pode ter/ganhar acesso a mais.
+  const canSwitch = isAdmin || events.length > 1;
+
   return (
     <div className="event-switcher">
-      <button className="event-trigger" type="button" onClick={() => setOpen((v) => !v)}>
-        <span className="event-name">{event.name}</span>
-        <span className="event-caret">▾</span>
-      </button>
-      {open && (
+      {canSwitch ? (
+        <button className="event-trigger" type="button" onClick={() => setOpen((v) => !v)}>
+          <span className="event-name">{event.name}</span>
+          <span className="event-caret">▾</span>
+        </button>
+      ) : (
+        <div className="event-trigger event-trigger-static">
+          <span className="event-name">{event.name}</span>
+        </div>
+      )}
+      {canSwitch && open && (
         <div className="event-menu">
-          {events.map((ev) => (
-            <div
-              key={ev.id}
-              className={`event-menu-item ${ev.id === event.id ? "on" : ""}`}
-              onClick={() => {
-                setEventId(ev.id);
-                setOpen(false);
-              }}
-            >
-              {ev.name}
-            </div>
-          ))}
+          {(() => {
+            // eventos já vêm ordenados por grupo/nome da API — só precisa
+            // renderizar um cabeçalho toda vez que o grupo muda na sequência.
+            let lastGrupo: string | null | undefined;
+            return events.map((ev) => {
+              const showHeader = (ev.grupo ?? null) !== lastGrupo;
+              lastGrupo = ev.grupo ?? null;
+              return (
+                <div key={ev.id}>
+                  {showHeader && ev.grupo && <div className="event-menu-group">{ev.grupo}</div>}
+                  <div
+                    className={`event-menu-item ${ev.id === event.id ? "on" : ""}`}
+                    onClick={() => {
+                      setEventId(ev.id);
+                      setOpen(false);
+                    }}
+                  >
+                    {ev.name}
+                  </div>
+                </div>
+              );
+            });
+          })()}
         </div>
       )}
       <div className="edition-pills">
@@ -85,6 +107,14 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   const { event } = useEvent();
   const hideBranding = !!event?.hideBranding;
 
+  // abaixo do breakpoint mobile a sidebar vira um drawer — fechado por padrão,
+  // e sempre fecha sozinho ao trocar de página (senão ficaria aberto por cima
+  // do conteúdo novo depois de navegar).
+  const [navOpen, setNavOpen] = useState(false);
+  useEffect(() => {
+    setNavOpen(false);
+  }, [pathname]);
+
   useEffect(() => {
     const root = document.documentElement;
     const color = event?.accentColor;
@@ -112,15 +142,31 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   return (
     <>
       <CursorField />
+      <button
+        type="button"
+        className="mobile-nav-toggle"
+        aria-label={navOpen ? "Fechar menu" : "Abrir menu"}
+        aria-expanded={navOpen}
+        onClick={() => setNavOpen((v) => !v)}
+      >
+        {navOpen ? "✕" : "☰"}
+      </button>
+      {navOpen && <div className="rail-backdrop" onClick={() => setNavOpen(false)} />}
       <div className="shell">
-        <aside className="rail">
+        <aside className={`rail ${navOpen ? "rail-open" : ""}`}>
           {!hideBranding && (
             <div className="rail-brand">
-              <Logo size={30} src={event?.logoUrl} />
-              <div>
-                <strong>{event?.logoUrl ? event.name : t("shell.brand.title")}</strong>
-                {!event?.logoUrl && <span>{t("shell.brand.subtitle")}</span>}
-              </div>
+              {event?.logoUrl ? (
+                <Logo width={176} src={event.logoUrl} />
+              ) : (
+                <>
+                  <Logo size={30} />
+                  <div>
+                    <strong>{t("shell.brand.title")}</strong>
+                    <span>{t("shell.brand.subtitle")}</span>
+                  </div>
+                </>
+              )}
             </div>
           )}
 

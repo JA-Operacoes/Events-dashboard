@@ -10,7 +10,7 @@ export async function POST(req: NextRequest) {
 
   const user = await prisma.user.findUnique({
     where: { email },
-    include: { eventAccess: { select: { eventId: true } } },
+    include: { editionAccess: { select: { editionId: true } } },
   });
 
   if (!user || !verifyPassword(password, user.passwordHash)) {
@@ -19,8 +19,8 @@ export async function POST(req: NextRequest) {
 
   const session = {
     email: user.email,
-    isAdmin: user.isAdmin,
-    allowedEventIds: user.isAdmin ? ("all" as const) : user.eventAccess.map((a) => a.eventId),
+    role: user.role,
+    allowedEditionIds: user.role === "admin" ? ("all" as const) : user.editionAccess.map((a) => a.editionId),
   };
 
   const token = await signSession(session);

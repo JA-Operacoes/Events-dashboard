@@ -2,7 +2,6 @@
 
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { fetchEvents, type EventOption } from "./events";
-import { useAuth } from "./auth";
 
 type EditionOverride = { bannerUrl?: string | null; showTitleOverBanner?: boolean };
 
@@ -30,16 +29,17 @@ type EventContextValue = {
 const EventContext = createContext<EventContextValue | null>(null);
 
 export function EventProvider({ children }: { children: React.ReactNode }) {
-  const { session } = useAuth();
-  const [allEvents, setAllEvents] = useState<EventOption[]>([]);
+  const [events, setEvents] = useState<EventOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [eventId, setEventId] = useState<string | null>(null);
   const [editionId, setEditionId] = useState<string | null>(null);
   const [overrides, setOverrides] = useState<Record<string, EditionOverride>>({});
 
+  // a filtragem por acesso já acontece no servidor (por edição, não por
+  // evento inteiro) — o que chega aqui é exatamente o que esse usuário pode ver.
   async function refreshEvents() {
     try {
-      setAllEvents(await fetchEvents());
+      setEvents(await fetchEvents());
     } catch (err) {
       console.error("Falha ao carregar eventos:", err);
     }
@@ -48,14 +48,6 @@ export function EventProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     refreshEvents().finally(() => setLoading(false));
   }, []);
-
-  // sem sessão (stub atual), mostra tudo — a restrição por usuário só passa a
-  // valer quando o login estiver ligado a um backend de verdade.
-  const events = useMemo(() => {
-    if (!session || session.allowedEventIds === "all") return allEvents;
-    const allowed = new Set(session.allowedEventIds);
-    return allEvents.filter((ev) => allowed.has(ev.id));
-  }, [allEvents, session]);
 
   useEffect(() => {
     if (events.length && !events.some((ev) => ev.id === eventId)) {

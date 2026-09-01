@@ -2,15 +2,161 @@
 
 import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth";
+import { Checkbox } from "@/components/ui";
+import { notifySuccess, notifyError, confirmDanger, showDetails } from "@/lib/swal";
 
-type EventOption = { id: string; nome: string };
+type EventWithEditions = {
+  id: string;
+  nome: string;
+  editions: { id: string; label: string; ano: number }[];
+};
+type Role = "admin" | "funcionario" | "usuario";
 type UserRow = {
   id: string;
   email: string;
-  isAdmin: boolean;
+  role: Role;
   createdAt: string;
-  eventAccess: { event: { id: string; nome: string } }[];
+  editionAccess: { edition: { id: string; label: string; ano: number; event: { id: string; nome: string } } }[];
 };
+
+const ROLE_LABEL: Record<Role, string> = { admin: "Admin", funcionario: "Funcionário", usuario: "Usuário" };
+const ROLE_BADGE_CLASS: Record<Role, string> = { admin: "pago", funcionario: "pendente", usuario: "cancelado" };
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+}
+
+function groupByEvent(u: UserRow): Map<string, string[]> {
+  const byEvent = new Map<string, string[]>();
+  for (const a of u.editionAccess) {
+    const key = a.edition.event.nome;
+    if (!byEvent.has(key)) byEvent.set(key, []);
+    byEvent.get(key)!.push(a.edition.label);
+  }
+  return byEvent;
+}
+
+/**
+ * Coluna "Edições" da tabela — com 3 ou menos, mostra "Evento (n)" por
+ * extenso mesmo (cabe numa linha). A partir de 4, listar tudo vira ilegível
+ * — mostra só o total e abre um popup com a lista completa ao clicar.
+ */
+function EditionAccessCell({ u }: { u: UserRow }) {
+  if (u.role === "admin") return <>todas</>;
+  if (!u.editionAccess.length) return <>—</>;
+
+  const byEvent = groupByEvent(u);
+
+  if (u.editionAccess.length <= 3) {
+    return <>{Array.from(byEvent, ([nome, labels]) => `${nome} (${labels.length})`).join(", ")}</>;
+  }
+
+  function openDetails() {
+    const html = Array.from(byEvent, ([nome, labels]) => `<strong>${escapeHtml(nome)}</strong>: ${labels.map(escapeHtml).join(", ")}`).join(
+      "<br/>"
+    );
+    showDetails(`Edições de ${u.email}`, html);
+  }
+
+  return (
+    <button type="button" className="btn" style={{ padding: "4px 10px", fontSize: 12 }} onClick={openDetails}>
+      {u.editionAccess.length} edições
+    </button>
+  );
+}
+
+/**
+ * admin: acesso total. funcionario: mexe nos dados (import/sync/KPI) das
+ * edições vinculadas, mas não entra em Eventos/Usuários. usuario: só olha.
+ */
+function RoleSelect({ value, onChange }: { value: Role; onChange: (r: Role) => void }) {
+  return (
+    <div className="pref-seg" style={{ padding: 2, alignSelf: "flex-start" }}>
+      {(["usuario", "funcionario", "admin"] as const).map((r) => (
+        <button key={r} type="button" className={value === r ? "on" : ""} onClick={() => onChange(r)}>
+          {ROLE_LABEL[r]}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Acesso é concedido por EDIÇÃO, não por evento inteiro — dar acesso ao
+ * evento todo confundia quem via edições antigas/irrelevantes misturadas às
+ * atuais. Com muitos eventos/edições, listar tudo expandido vira uma parede
+ * de texto — por isso cada evento é um accordion fechado por padrão (só abre
+ * sozinho se já tiver alguma edição selecionada), com o total marcado no
+ * cabeçalho pra dar pra ver de relance sem precisar abrir.
+ */
+function EditionPicker({
+  events,
+  selected,
+  onToggle,
+}: {
+  events: EventWithEditions[];
+  selected: Set<string>;
+  onToggle: (editionId: string) => void;
+}) {
+  const withEditions = events.filter((ev) => ev.editions.length > 0);
+  const [openIds, setOpenIds] = useState<Set<string>>(
+    () => new Set(withEditions.filter((ev) => ev.editions.some((ed) => selected.has(ed.id))).map((ev) => ev.id))
+  );
+
+  function toggleOpen(id: string) {
+    setOpenIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  if (!withEditions.length) {
+    return (
+      <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>
+        nenhum evento com edição cadastrada ainda — crie um em Eventos antes
+      </span>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, border: "1px solid var(--line)", borderRadius: 9, overflow: "hidden" }}>
+      {withEditions.map((ev, i) => {
+        const count = ev.editions.filter((ed) => selected.has(ed.id)).length;
+        const isOpen = openIds.has(ev.id);
+        return (
+          <div key={ev.id} style={{ borderTop: i > 0 ? "1px solid var(--line)" : "none" }}>
+            <button
+              type="button"
+              onClick={() => toggleOpen(ev.id)}
+              style={{
+                width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
+                padding: "8px 10px", background: "none", border: "none", cursor: "pointer", textAlign: "left",
+              }}
+            >
+              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-dim)" }}>{ev.nome}</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 11, fontFamily: "var(--mono)", color: count ? "var(--accent)" : "var(--ink-mute)" }}>
+                  {count}/{ev.editions.length}
+                </span>
+                <span style={{ fontSize: 10, color: "var(--ink-mute)" }}>{isOpen ? "▾" : "▸"}</span>
+              </span>
+            </button>
+            {isOpen && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: "0 10px 10px" }}>
+                {ev.editions.map((ed) => (
+                  <div key={ed.id} className="pref-seg" style={{ padding: "5px 10px" }}>
+                    <Checkbox checked={selected.has(ed.id)} onChange={() => onToggle(ed.id)} label={ed.label} />
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 function EditUserRow({
   user,
@@ -19,21 +165,21 @@ function EditUserRow({
   onSaved,
 }: {
   user: UserRow;
-  events: EventOption[];
+  events: EventWithEditions[];
   onCancel: () => void;
   onSaved: () => void;
 }) {
   const [email, setEmail] = useState(user.email);
   const [password, setPassword] = useState("");
-  const [isAdmin, setIsAdmin] = useState(user.isAdmin);
-  const [selectedEvents, setSelectedEvents] = useState<Set<string>>(
-    new Set(user.eventAccess.map((a) => a.event.id))
+  const [role, setRole] = useState<Role>(user.role);
+  const [selectedEditions, setSelectedEditions] = useState<Set<string>>(
+    new Set(user.editionAccess.map((a) => a.edition.id))
   );
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  function toggleEvent(id: string) {
-    setSelectedEvents((prev) => {
+  function toggleEdition(id: string) {
+    setSelectedEditions((prev) => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
@@ -49,15 +195,18 @@ function EditUserRow({
       body: JSON.stringify({
         email,
         password: password || undefined,
-        isAdmin,
-        eventIds: isAdmin ? [] : Array.from(selectedEvents),
+        role,
+        editionIds: role === "admin" ? [] : Array.from(selectedEditions),
       }),
     });
     setSaving(false);
     if (!res.ok) {
-      setError((await res.json()).error ?? "Falha ao salvar");
+      const msg = (await res.json()).error ?? "Falha ao salvar";
+      setError(msg);
+      notifyError("Não foi possível salvar", msg);
       return;
     }
+    notifySuccess("Usuário atualizado");
     onSaved();
   }
 
@@ -86,28 +235,24 @@ function EditUserRow({
               />
             </div>
 
-            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "var(--ink-dim)" }}>
-              <input type="checkbox" checked={isAdmin} onChange={(e) => setIsAdmin(e.target.checked)} />
-              é administrador (enxerga todos os eventos, sem precisar vincular)
-            </label>
+            <div>
+              <p className="section-label" style={{ margin: "0 0 8px" }}>
+                Perfil
+              </p>
+              <RoleSelect value={role} onChange={setRole} />
+              <p style={{ fontSize: 11, color: "var(--ink-mute)", margin: "6px 0 0" }}>
+                {role === "admin" && "Acesso total — gerencia eventos, edições e outros usuários, enxerga tudo."}
+                {role === "funcionario" && "Importa planilha, sincroniza e edita KPI nas edições vinculadas — sem acesso a Eventos/Usuários."}
+                {role === "usuario" && "Só visualiza as edições vinculadas, sem mexer em nada."}
+              </p>
+            </div>
 
-            {!isAdmin && (
+            {role !== "admin" && (
               <div>
                 <p className="section-label" style={{ margin: "0 0 8px" }}>
-                  Eventos que este usuário acessa
+                  Edições que este usuário acessa
                 </p>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {events.map((ev) => (
-                    <label
-                      key={ev.id}
-                      className="pref-seg"
-                      style={{ padding: "6px 12px", cursor: "pointer", gap: 6, display: "flex", alignItems: "center" }}
-                    >
-                      <input type="checkbox" checked={selectedEvents.has(ev.id)} onChange={() => toggleEvent(ev.id)} />
-                      <span style={{ fontSize: 12.5 }}>{ev.nome}</span>
-                    </label>
-                  ))}
-                </div>
+                <EditionPicker events={events} selected={selectedEditions} onToggle={toggleEdition} />
               </div>
             )}
 
@@ -131,22 +276,30 @@ function EditUserRow({
 export default function AdminUsuariosPage() {
   const { isAdmin } = useAuth();
   const [users, setUsers] = useState<UserRow[]>([]);
-  const [events, setEvents] = useState<EventOption[]>([]);
+  const [events, setEvents] = useState<EventWithEditions[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [userSearch, setUserSearch] = useState("");
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [novoAdmin, setNovoAdmin] = useState(false);
-  const [selectedEvents, setSelectedEvents] = useState<Set<string>>(new Set());
+  const [novoRole, setNovoRole] = useState<Role>("usuario");
+  const [selectedEditions, setSelectedEditions] = useState<Set<string>>(new Set());
   const [submitting, setSubmitting] = useState(false);
 
   async function load() {
     setLoading(true);
     const [usersRes, eventsRes] = await Promise.all([fetch("/api/admin/users"), fetch("/api/admin/events")]);
     setUsers(await usersRes.json());
-    setEvents((await eventsRes.json()).map((e: any) => ({ id: e.id, nome: e.nome })));
+    const eventsData = await eventsRes.json();
+    setEvents(
+      eventsData.map((e: any) => ({
+        id: e.id,
+        nome: e.nome,
+        editions: e.editions.map((ed: any) => ({ id: ed.id, label: ed.label, ano: ed.ano })),
+      }))
+    );
     setLoading(false);
   }
 
@@ -154,8 +307,8 @@ export default function AdminUsuariosPage() {
     load();
   }, []);
 
-  function toggleEvent(id: string) {
-    setSelectedEvents((prev) => {
+  function toggleEdition(id: string) {
+    setSelectedEditions((prev) => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
@@ -172,26 +325,33 @@ export default function AdminUsuariosPage() {
       body: JSON.stringify({
         email,
         password,
-        isAdmin: novoAdmin,
-        eventIds: novoAdmin ? [] : Array.from(selectedEvents),
+        role: novoRole,
+        editionIds: novoRole === "admin" ? [] : Array.from(selectedEditions),
       }),
     });
     setSubmitting(false);
     if (!res.ok) {
-      setError((await res.json()).error ?? "Falha ao criar usuário");
+      const msg = (await res.json()).error ?? "Falha ao criar usuário";
+      setError(msg);
+      notifyError("Não foi possível criar o usuário", msg);
       return;
     }
     setEmail("");
     setPassword("");
-    setNovoAdmin(false);
-    setSelectedEvents(new Set());
+    setNovoRole("usuario");
+    setSelectedEditions(new Set());
     load();
+    notifySuccess("Usuário criado");
   }
 
+  const filteredUsers = users.filter((u) => u.email.toLowerCase().includes(userSearch.trim().toLowerCase()));
+
   async function handleDelete(id: string) {
-    if (!confirm("Remover este usuário?")) return;
+    const ok = await confirmDanger("Remover este usuário?", "O acesso dele a todas as edições vinculadas também é removido — não dá pra desfazer.");
+    if (!ok) return;
     await fetch(`/api/admin/users/${id}`, { method: "DELETE" });
     load();
+    notifySuccess("Usuário removido");
   }
 
   if (!isAdmin) {
@@ -209,7 +369,7 @@ export default function AdminUsuariosPage() {
       <div className="topline">
         <div>
           <h1>Usuários</h1>
-          <div className="sub">cadastro rápido — vincula direto aos eventos que a pessoa vai acessar</div>
+          <div className="sub">cadastro rápido — vincula direto às edições que a pessoa vai acessar</div>
         </div>
       </div>
 
@@ -243,34 +403,24 @@ export default function AdminUsuariosPage() {
             />
           </div>
 
-          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "var(--ink-dim)" }}>
-            <input type="checkbox" checked={novoAdmin} onChange={(e) => setNovoAdmin(e.target.checked)} />
-            é administrador (enxerga todos os eventos, sem precisar vincular)
-          </label>
+          <div>
+            <p className="section-label" style={{ margin: "0 0 8px" }}>
+              Perfil
+            </p>
+            <RoleSelect value={novoRole} onChange={setNovoRole} />
+            <p style={{ fontSize: 11, color: "var(--ink-mute)", margin: "6px 0 0" }}>
+              {novoRole === "admin" && "Acesso total — gerencia eventos, edições e outros usuários, enxerga tudo."}
+              {novoRole === "funcionario" && "Importa planilha, sincroniza e edita KPI nas edições vinculadas — sem acesso a Eventos/Usuários."}
+              {novoRole === "usuario" && "Só visualiza as edições vinculadas, sem mexer em nada."}
+            </p>
+          </div>
 
-          {!novoAdmin && (
+          {novoRole !== "admin" && (
             <div>
               <p className="section-label" style={{ margin: "0 0 8px" }}>
-                Eventos que este usuário vai acessar
+                Edições que este usuário vai acessar
               </p>
-              {!events.length ? (
-                <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>
-                  nenhum evento cadastrado ainda — crie um em Eventos antes
-                </span>
-              ) : (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {events.map((ev) => (
-                    <label
-                      key={ev.id}
-                      className="pref-seg"
-                      style={{ padding: "6px 12px", cursor: "pointer", gap: 6, display: "flex", alignItems: "center" }}
-                    >
-                      <input type="checkbox" checked={selectedEvents.has(ev.id)} onChange={() => toggleEvent(ev.id)} />
-                      <span style={{ fontSize: 12.5 }}>{ev.nome}</span>
-                    </label>
-                  ))}
-                </div>
-              )}
+              <EditionPicker events={events} selected={selectedEditions} onToggle={toggleEdition} />
             </div>
           )}
 
@@ -287,6 +437,14 @@ export default function AdminUsuariosPage() {
           <div>
             <h3>Usuários cadastrados</h3>
           </div>
+          <div className="search" style={{ maxWidth: 260 }}>
+            <input
+              type="text"
+              placeholder="Buscar por e-mail"
+              value={userSearch}
+              onChange={(e) => setUserSearch(e.target.value)}
+            />
+          </div>
         </div>
         <div className="table-scroll">
           <table>
@@ -294,7 +452,7 @@ export default function AdminUsuariosPage() {
               <tr>
                 <th>E-mail</th>
                 <th>Perfil</th>
-                <th>Eventos</th>
+                <th>Edições</th>
                 <th></th>
               </tr>
             </thead>
@@ -311,8 +469,14 @@ export default function AdminUsuariosPage() {
                     nenhum usuário cadastrado ainda
                   </td>
                 </tr>
+              ) : !filteredUsers.length ? (
+                <tr>
+                  <td colSpan={4} style={{ padding: 20, textAlign: "center", color: "var(--ink-mute)" }}>
+                    nenhum resultado para "{userSearch}"
+                  </td>
+                </tr>
               ) : (
-                users.map((u) =>
+                filteredUsers.map((u) =>
                   editingId === u.id ? (
                     <EditUserRow
                       key={u.id}
@@ -328,12 +492,14 @@ export default function AdminUsuariosPage() {
                     <tr key={u.id}>
                       <td style={{ fontFamily: "var(--sans)", color: "var(--ink)" }}>{u.email}</td>
                       <td>
-                        <span className={`badge ${u.isAdmin ? "pago" : "pendente"}`}>
+                        <span className={`badge ${ROLE_BADGE_CLASS[u.role]}`}>
                           <span className="dot" />
-                          {u.isAdmin ? "Admin" : "Usuário"}
+                          {ROLE_LABEL[u.role]}
                         </span>
                       </td>
-                      <td>{u.isAdmin ? "todos" : u.eventAccess.map((a) => a.event.nome).join(", ") || "—"}</td>
+                      <td>
+                        <EditionAccessCell u={u} />
+                      </td>
                       <td style={{ display: "flex", gap: 8 }}>
                         <button className="btn" type="button" onClick={() => setEditingId(u.id)}>
                           Editar

@@ -10,20 +10,28 @@ import { SpreadsheetImportFinanceiro } from "@/components/SpreadsheetImport";
 import { aggregateFinanceiro, mergeImportedInvoices } from "@/lib/spreadsheetImport";
 import { Donut, BarList, StatusBars, LineChart } from "@/components/charts";
 import { getCached, setCached } from "@/lib/pageCache";
+import { matchesPeriod, normalizePaymentMethod, formatRelativeTime } from "@/lib/period";
+import { notifySuccess, notifyWarning, notifyError } from "@/lib/swal";
 
 export default function FinanceiroPage() {
   const { eventId, editionId, event, edition } = useEvent();
   const { t } = useI18n();
-  const { isAdmin } = useAuth();
+  const { canManageData } = useAuth();
   const [period, setPeriod] = useState<FinanceiroFilters["period"]>("all");
   const [method, setMethod] = useState<FinanceiroFilters["method"]>("all");
   const [statusFilter, setStatusFilter] = useState<FinanceiroFilters["status"]>("all");
+  const [donutVariant, setDonutVariant] = useState<"full" | "half">("full");
+  // opcional — só faz sentido quando a planilha importada traz colunas de rateio (Conta/Conta 2/Conta 3).
+  const [contaFilter, setContaFilter] = useState("all");
   const [search, setSearch] = useState("");
   // busca específica da tabela de duplicatas — filtra só a lista abaixo, sem
   // recalcular KPIs/gráficos (diferente da busca geral, que filtra tudo).
   const [tableSearch, setTableSearch] = useState("");
   const [connState, setConnState] = useState<"pending" | "connected" | "error">("pending");
   const [apiData, setApiData] = useState<FinanceiroData | null>(null);
+  // quando veio a última atualização de dados (import de planilha) — é o que
+  // o usuário comum vê no lugar do chip técnico de conexão com a API.
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
   // lê o último resultado conhecido pra essa edição na hora — evita a tela
   // "piscar" vazia sempre que você sai da aba e volta; loadImported() abaixo
   // ainda busca a versão atual por baixo dos panos.
@@ -31,23 +39,45 @@ export default function FinanceiroPage() {
     () => getCached(`financeiro:${editionId}`) ?? []
   );
   const hasImported = importedInvoices.length > 0;
-  const [kpiOverrides, setKpiOverrides] = useState<Partial<FinanceiroData["kpis"]>>({});
 
   // fonte bruta de duplicatas, venha de onde vier — o filtro de status/busca
   // roda por cima dela e os gráficos/tabela são recalculados a partir do
   // resultado filtrado, então os filtros afetam tudo, não só a tabela.
   const rawInvoices = apiData?.invoices ?? importedInvoices;
+
+  // só existem quando a planilha importada mapeou alguma coluna de conta —
+  // por isso o filtro de conta só aparece na tela quando essa lista não é vazia.
+  const contaOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          rawInvoices.flatMap((inv) => [inv.centroCusto, inv.conta1, inv.conta2, inv.conta3]).filter((c): c is string => !!c)
+        )
+      ).sort((a, b) => a.localeCompare(b, "pt-BR")),
+    [rawInvoices]
+  );
+
   const filteredInvoices = useMemo(() => {
     const term = search.trim().toLowerCase();
     return rawInvoices.filter((inv) => {
       if (statusFilter !== "all" && inv.status !== statusFilter) return false;
+      if (method !== "all" && normalizePaymentMethod(inv.forma) !== method) return false;
+      if (
+        contaFilter !== "all" &&
+        inv.centroCusto !== contaFilter &&
+        inv.conta1 !== contaFilter &&
+        inv.conta2 !== contaFilter &&
+        inv.conta3 !== contaFilter
+      )
+        return false;
+      if (!matchesPeriod(inv.vencimento, period)) return false;
       if (term) {
         const haystack = `${inv.cliente} ${inv.cnpj} ${inv.numero}`.toLowerCase();
         if (!haystack.includes(term)) return false;
       }
       return true;
     });
-  }, [rawInvoices, statusFilter, search]);
+  }, [rawInvoices, statusFilter, method, contaFilter, period, search]);
 
   const data = apiData || hasImported ? aggregateFinanceiro(filteredInvoices) : null;
 
@@ -117,11 +147,18 @@ export default function FinanceiroPage() {
       const invoices: Invoice[] = await res.json();
       setImportedInvoices(invoices);
       setCached(`financeiro:${editionId}`, invoices);
+      setLastUpdatedAt(res.headers.get("X-Last-Updated"));
     }
   }
 
   async function handleImported(invoices: Invoice[], fileName: string) {
-    if (!editionId) return;
+    if (!editionId) {
+      // sem edição selecionada não tem onde persistir — antes isso falhava
+      // em silêncio (o modal fechava como se tivesse dado certo, mas nada
+      // era salvo). Agora avisa antes de fazer qualquer coisa.
+      notifyWarning("Selecione uma edição primeiro", "Escolha (ou crie) uma edição do evento antes de importar a planilha — sem isso não há onde salvar os dados.");
+      return;
+    }
     // otimista: mostra na hora, e persiste em paralelo — se falhar, recarrega do banco pra não ficar dessincronizado.
     setImportedInvoices((prev) => {
       const next = mergeImportedInvoices(prev, invoices, fileName);
@@ -133,7 +170,12 @@ export default function FinanceiroPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ editionId, sourceFile: fileName, invoices }),
     });
-    if (!res.ok) loadImported();
+    if (!res.ok) {
+      loadImported();
+      notifyError("Falha ao importar planilha", "Os dados não foram salvos — tente novamente em instantes.");
+      return;
+    }
+    notifySuccess("Planilha importada", `${invoices.length} linha(s) de "${fileName}" foram salvas.`);
   }
 
   async function removeImportedFile(fileName: string) {
@@ -199,16 +241,34 @@ export default function FinanceiroPage() {
           </div>
         </div>
         <div className="actions">
-          {hasImported && !apiData && <span className="import-badge">dados de planilha importada</span>}
-          <ConnChip state={connState} />
-          {!apiData && <SpreadsheetImportFinanceiro eventId={eventId} onImported={handleImported} />}
-          <button className="btn primary" type="button" onClick={load}>
-            {t("common.sync")}
-          </button>
+          {canManageData && hasImported && !apiData && <span className="import-badge">dados de planilha importada</span>}
+          {canManageData ? (
+            <ConnChip state={connState} />
+          ) : (
+            lastUpdatedAt && <span className="last-updated-chip">atualizado {formatRelativeTime(lastUpdatedAt)}</span>
+          )}
+          {canManageData && !apiData && <SpreadsheetImportFinanceiro eventId={eventId} onImported={handleImported} />}
+          {canManageData && (
+            <button className="btn primary" type="button" onClick={load}>
+              {t("common.sync")}
+            </button>
+          )}
         </div>
       </div>
 
-      {!apiData && importedFiles.length > 0 && (
+      {contaFilter !== "all" && (
+        <div className="conta-focus-banner">
+          <span>
+            Visão exclusiva da conta <strong>{contaFilter}</strong> — KPIs, gráficos e status abaixo consideram só as
+            duplicatas dela.
+          </span>
+          <button className="btn" type="button" onClick={() => setContaFilter("all")}>
+            ← Voltar para visão geral
+          </button>
+        </div>
+      )}
+
+      {canManageData && !apiData && importedFiles.length > 0 && (
         <div className="import-files-bar">
           <span>Arquivos importados:</span>
           {importedFiles.map(([name, count]) => (
@@ -249,12 +309,7 @@ export default function FinanceiroPage() {
         </div>
       </div>
 
-      <KpiRow
-        defs={KPI_DEFS}
-        values={isAdmin ? { ...data?.kpis, ...kpiOverrides } : data?.kpis}
-        editable={isAdmin}
-        onEditValue={(key, v) => setKpiOverrides((prev) => ({ ...prev, [key]: v }))}
-      />
+      <KpiRow defs={KPI_DEFS} values={data?.kpis} />
 
       <div className="panels">
         <div className="panel">
@@ -280,8 +335,8 @@ export default function FinanceiroPage() {
             <LineChart
               data={data.timeline}
               series={[
+                { key: "previsto", color: "var(--amber)", secondary: true },
                 { key: "recebido", color: "var(--accent)" },
-                { key: "previsto", color: "var(--amber)" },
               ]}
             />
           )}
@@ -293,13 +348,21 @@ export default function FinanceiroPage() {
               <h3>{t("financeiro.donut.title")}</h3>
               <p>{t("financeiro.donut.desc")}</p>
             </div>
+            <div className="seg">
+              <button className={donutVariant === "full" ? "on" : ""} type="button" onClick={() => setDonutVariant("full")}>
+                Completo
+              </button>
+              <button className={donutVariant === "half" ? "on" : ""} type="button" onClick={() => setDonutVariant("half")}>
+                Meio círculo
+              </button>
+            </div>
           </div>
           {!data?.paymentMethods.length ? (
-            <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
-              <svg width="112" height="112" viewBox="0 0 112 112" aria-hidden="true">
-                <circle cx="56" cy="56" r="44" fill="none" stroke="var(--line)" strokeWidth="14" strokeDasharray="4 6" />
+            <div className="donut-wrap">
+              <svg className="donut-svg" viewBox="0 0 144 144" aria-hidden="true">
+                <circle cx="72" cy="72" r="56" fill="none" stroke="var(--line)" strokeWidth="18" strokeDasharray="4 6" />
               </svg>
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 10 }}>
+              <div className="donut-legend">
                 {[
                   { label: t("common.boleto"), color: "var(--accent)" },
                   { label: t("common.cartao"), color: "var(--amber)" },
@@ -316,7 +379,7 @@ export default function FinanceiroPage() {
               </div>
             </div>
           ) : (
-            <Donut data={data.paymentMethods} />
+            <Donut data={data.paymentMethods} variant={donutVariant} />
           )}
         </div>
       </div>
@@ -332,7 +395,11 @@ export default function FinanceiroPage() {
           {!data?.topClients.length ? (
             <Empty glyph="▤" title={t("financeiro.ranking.empty.title")} desc={t("financeiro.ranking.empty.desc")} />
           ) : (
-            <BarList data={data.topClients} />
+            <BarList
+              data={data.topClients}
+              selected={search}
+              onSelect={(name) => setSearch((prev) => (prev === name ? "" : name))}
+            />
           )}
         </div>
 
@@ -362,6 +429,33 @@ export default function FinanceiroPage() {
           )}
         </div>
       </div>
+
+      {!!data?.contas.length && (
+        <div className="panel" style={{ marginBottom: 12 }}>
+          <div className="panel-head">
+            <div>
+              <h3>Por conta / centro de custo</h3>
+              <p>quanto passa por cada conta do rateio importado da planilha</p>
+            </div>
+        {contaOptions.length > 0 && (
+          <select className="input" value={contaFilter} onChange={(e) => setContaFilter(e.target.value)} style={{ maxWidth: 220 }}>
+            <option value="all">Todas as contas</option>
+            {contaOptions.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        )}
+          </div>
+          <BarList
+            data={data.contas}
+            layout="stacked"
+            selected={contaFilter === "all" ? "" : contaFilter}
+            onSelect={(name) => setContaFilter((prev) => (prev === name ? "all" : name))}
+          />
+        </div>
+      )}
 
       <div className="table-wrap">
         <div className="panel-head" style={{ padding: "16px 16px 0" }}>
