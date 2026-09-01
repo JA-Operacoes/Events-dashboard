@@ -579,6 +579,7 @@ td.num, th.num { text-align: right; }
   border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px;
 }
 .import-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.import-batch-summary { margin-bottom: 8px; }
 .import-actions .btn:disabled { opacity: .5; cursor: not-allowed; }
 .import-files-bar {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: -6px 0 16px;

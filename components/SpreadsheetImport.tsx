@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   parseSpreadsheetFile,
   distinctValues,
@@ -58,33 +58,85 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState("");
 
-  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file || !eventId) return;
-    setError(null);
-    setFileName(file.name);
+  // Upload em lote: quando mais de um arquivo é escolhido de uma vez, os que
+  // têm exatamente o mesmo cabeçalho do primeiro (mesmo mapeamento) são
+  // importados automaticamente em sequência — só pausa pra pedir mapeamento
+  // de novo quando encontra um arquivo com colunas diferentes.
+  const queueRef = useRef<File[]>([]);
+  const lastMappingRef = useRef<{ headers: string[]; mapping: ColumnMapping<K>; statusMapping: StatusMapping<V> } | null>(null);
+  const [batchTotal, setBatchTotal] = useState(0);
+  const [imported, setImported] = useState<{ fileName: string; rows: number }[]>([]);
+  const [skipped, setSkipped] = useState<{ fileName: string; reason: string }[]>([]);
+  const [processing, setProcessing] = useState(false);
+
+  function sameHeaders(a: string[], b: string[]) {
+    return a.length === b.length && a.every((h, i) => h === b[i]);
+  }
+
+  async function loadTableFor(file: File): Promise<SheetTable | null> {
     try {
-      const parsed = await parseSpreadsheetFile(file);
-      setTable(parsed);
-
-      const saved = loadMapping<K, V>(module, eventId);
-      const savedValid = saved && Object.values(saved.mapping).every((col) => !col || parsed.headers.includes(col as string));
-
-      const nextMapping = savedValid ? saved!.mapping : suggestMappingFn(parsed.headers);
-      setMapping(nextMapping);
-
-      const statusCol = nextMapping[STATUS_KEY];
-      if (statusCol) {
-        const values = distinctValues(parsed, statusCol);
-        const suggested = suggestStatusMappingFn(values);
-        setStatusMapping(savedValid ? { ...suggested, ...saved!.statusMapping } : suggested);
-      } else {
-        setStatusMapping({});
-      }
+      return await parseSpreadsheetFile(file);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Falha ao ler a planilha");
-      setTable(null);
+      setSkipped((prev) => [...prev, { fileName: file.name, reason: err instanceof Error ? err.message : "Falha ao ler a planilha" }]);
+      return null;
     }
+  }
+
+  function applyMappingFor(parsed: SheetTable) {
+    const saved = loadMapping<K, V>(module, eventId!);
+    const savedValid = saved && Object.values(saved.mapping).every((col) => !col || parsed.headers.includes(col as string));
+    const nextMapping = savedValid ? saved!.mapping : suggestMappingFn(parsed.headers);
+    setMapping(nextMapping);
+
+    const statusCol = nextMapping[STATUS_KEY];
+    if (statusCol) {
+      const values = distinctValues(parsed, statusCol);
+      const suggested = suggestStatusMappingFn(values);
+      setStatusMapping(savedValid ? { ...suggested, ...saved!.statusMapping } : suggested);
+    } else {
+      setStatusMapping({});
+    }
+  }
+
+  // Processa a fila: importa direto todo arquivo cujo cabeçalho bate com o
+  // último mapeamento confirmado; para no primeiro que não bater, pra revisão manual.
+  async function drainQueue() {
+    setProcessing(true);
+    while (queueRef.current.length > 0) {
+      const file = queueRef.current[0];
+      const parsed = await loadTableFor(file);
+      queueRef.current = queueRef.current.slice(1);
+      if (!parsed) continue;
+
+      const last = lastMappingRef.current;
+      if (last && sameHeaders(parsed.headers, last.headers)) {
+        const rows = mapRowsFn(parsed, last.mapping, last.statusMapping, file.name);
+        onImported(rows, file.name);
+        setImported((prev) => [...prev, { fileName: file.name, rows: rows.length }]);
+        continue;
+      }
+
+      // cabeçalho diferente (ou é o primeiro arquivo) — pausa a fila e pede revisão manual.
+      setTable(parsed);
+      setFileName(file.name);
+      applyMappingFor(parsed);
+      setProcessing(false);
+      return;
+    }
+    setProcessing(false);
+  }
+
+  async function handleFiles(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = "";
+    if (!files.length || !eventId) return;
+    setError(null);
+    setImported([]);
+    setSkipped([]);
+    lastMappingRef.current = null;
+    setBatchTotal(files.length);
+    queueRef.current = files;
+    await drainQueue();
   }
 
   const statusValues = table && mapping[STATUS_KEY] ? distinctValues(table, mapping[STATUS_KEY]!) : [];
@@ -96,15 +148,53 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
     setTable(null);
     setFileName("");
     setError(null);
+    setBatchTotal(0);
+    setImported([]);
+    setSkipped([]);
+    queueRef.current = [];
+    lastMappingRef.current = null;
   }
 
-  function handleConfirm() {
+  // "Trocar arquivo" descarta só o que está em revisão — se houver mais
+  // arquivos na fila do lote, eles continuam esperando.
+  function resetCurrent() {
+    setTable(null);
+    setFileName("");
+    setError(null);
+  }
+
+  // Em lote, "trocar arquivo" não faz sentido (não tem como escolher um
+  // substituto no meio da fila) — em vez disso pula esse arquivo e segue pro próximo.
+  async function handleSkipCurrent() {
+    setSkipped((prev) => [...prev, { fileName, reason: "pulado manualmente" }]);
+    setTable(null);
+    setFileName("");
+    if (queueRef.current.length > 0) {
+      await drainQueue();
+    } else {
+      setOpen(false);
+      reset();
+    }
+  }
+
+  async function handleConfirm() {
     if (!table || !eventId || !canConfirm) return;
     const rows = mapRowsFn(table, mapping, statusMapping, fileName);
     saveMapping(module, eventId, mapping, statusMapping);
     onImported(rows, fileName);
-    setOpen(false);
-    reset();
+    setImported((prev) => [...prev, { fileName, rows: rows.length }]);
+    lastMappingRef.current = { headers: table.headers, mapping, statusMapping };
+    setTable(null);
+    setFileName("");
+
+    if (queueRef.current.length > 0) {
+      await drainQueue();
+      return;
+    }
+    if (batchTotal <= 1) {
+      setOpen(false);
+      reset();
+    }
   }
 
   if (!open) {
@@ -134,18 +224,53 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
         </button>
       </div>
 
-      {!table && (
+      {!table && !processing && batchTotal === 0 && (
         <div className="import-upload">
-          <input type="file" accept=".xlsx,.xls,.csv" onChange={handleFile} />
-          <div className="import-hint">Formatos aceitos: .xlsx, .xls ou .csv</div>
+          <input type="file" accept=".xlsx,.xls,.csv" multiple onChange={handleFiles} />
+          <div className="import-hint">Formatos aceitos: .xlsx, .xls ou .csv — pode selecionar vários arquivos de uma vez</div>
           {error && <div className="import-error">{error}</div>}
         </div>
+      )}
+
+      {processing && (
+        <div className="import-file-info">Processando lote… {imported.length + skipped.length} de {batchTotal} arquivo(s)</div>
+      )}
+
+      {!table && !processing && batchTotal > 0 && (
+        <>
+          <div className="import-batch-summary">
+            <p className="section-label" style={{ margin: "0 0 8px" }}>
+              Lote concluído — {imported.length} de {batchTotal} arquivo(s) importado(s)
+            </p>
+            {imported.map((f) => (
+              <div className="import-status-row" key={f.fileName}>
+                <span>{f.fileName}</span>
+                <span style={{ color: "var(--good)" }}>{f.rows} linha(s)</span>
+              </div>
+            ))}
+            {skipped.map((f) => (
+              <div className="import-status-row" key={f.fileName}>
+                <span>{f.fileName}</span>
+                <span style={{ color: "var(--red)" }}>{f.reason}</span>
+              </div>
+            ))}
+          </div>
+          <div className="import-actions">
+            <button className="btn" type="button" onClick={reset}>
+              Selecionar mais arquivos
+            </button>
+            <button className="btn primary" type="button" onClick={() => { setOpen(false); reset(); }}>
+              Fechar
+            </button>
+          </div>
+        </>
       )}
 
       {table && (
         <>
           <div className="import-file-info">
             <strong>{fileName}</strong> · {table.rows.length} linhas · {table.headers.length} colunas
+            {batchTotal > 1 && ` · arquivo ${imported.length + skipped.length + 1} de ${batchTotal}`}
           </div>
 
           <div className="import-grid">
@@ -200,9 +325,15 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
           )}
 
           <div className="import-actions">
-            <button className="btn" type="button" onClick={reset}>
-              Trocar arquivo
-            </button>
+            {batchTotal > 1 ? (
+              <button className="btn" type="button" onClick={handleSkipCurrent}>
+                Pular este arquivo
+              </button>
+            ) : (
+              <button className="btn" type="button" onClick={resetCurrent}>
+                Trocar arquivo
+              </button>
+            )}
             <button className="btn primary" type="button" disabled={!canConfirm} onClick={handleConfirm}>
               Usar esses dados
             </button>
@@ -232,7 +363,7 @@ export function SpreadsheetImportFinanceiro({
       eventId={eventId}
       module="financeiro"
       title="Importar planilha — Financeiro"
-      description="Pode subir mais de uma planilha, e subir de novo sempre que atualizar — reenviar um arquivo com o mesmo nome substitui só as linhas dele, arquivos diferentes se somam. O mapeamento abaixo já vem sugerido pelo nome das colunas — confira e ajuste só o que estiver errado."
+      description="Selecione um ou vários arquivos de uma vez — os que tiverem o mesmo cabeçalho do primeiro são importados em lote automaticamente; também dá pra subir de novo sempre que atualizar — reenviar um arquivo com o mesmo nome substitui só as linhas dele, arquivos diferentes se somam. O mapeamento abaixo já vem sugerido pelo nome das colunas — confira e ajuste só o que estiver errado."
       fields={FINANCEIRO_FIELDS}
       statusOptions={FINANCEIRO_STATUS_OPTIONS}
       suggestMappingFn={suggestFinanceiroMapping}
@@ -261,7 +392,7 @@ export function SpreadsheetImportCredenciamento({
       eventId={eventId}
       module="credenciamento"
       title="Importar planilha — Credenciamento"
-      description="Pode subir mais de uma planilha, e subir de novo sempre que atualizar — reenviar um arquivo com o mesmo nome substitui só as linhas dele, arquivos diferentes se somam. O mapeamento abaixo já vem sugerido pelo nome das colunas — confira e ajuste só o que estiver errado."
+      description="Selecione um ou vários arquivos de uma vez — os que tiverem o mesmo cabeçalho do primeiro são importados em lote automaticamente; também dá pra subir de novo sempre que atualizar — reenviar um arquivo com o mesmo nome substitui só as linhas dele, arquivos diferentes se somam. O mapeamento abaixo já vem sugerido pelo nome das colunas — confira e ajuste só o que estiver errado."
       fields={CREDENCIAMENTO_FIELDS}
       statusOptions={CREDENCIAMENTO_STATUS_OPTIONS}
       suggestMappingFn={suggestCredenciamentoMapping}
