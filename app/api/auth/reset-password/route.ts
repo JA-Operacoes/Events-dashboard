@@ -1,15 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
 import { prisma } from "@/lib/prisma";
-import { hashPassword } from "@/lib/password";
+import { hashPassword, validatePasswordPolicy } from "@/lib/password";
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
   const token = String(body?.token ?? "");
   const password = String(body?.password ?? "");
 
-  if (password.length < 8) {
-    return NextResponse.json({ error: "Senha precisa ter ao menos 8 caracteres" }, { status: 400 });
+  const passwordError = validatePasswordPolicy(password);
+  if (passwordError) {
+    return NextResponse.json({ error: passwordError }, { status: 400 });
   }
 
   const tokenHash = createHash("sha256").update(token).digest("hex");

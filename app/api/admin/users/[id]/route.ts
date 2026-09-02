@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { hashPassword } from "@/lib/password";
+import { hashPassword, validatePasswordPolicy } from "@/lib/password";
 import { requireAdmin, isResponse } from "@/lib/serverAuth";
 
 const VALID_ROLES = ["admin", "funcionario", "usuario"] as const;
@@ -29,9 +29,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     data.email = email;
   }
   if (body.password) {
-    if (String(body.password).length < 8) {
-      return NextResponse.json({ error: "Senha precisa ter ao menos 8 caracteres" }, { status: 400 });
-    }
+    const passwordError = validatePasswordPolicy(String(body.password));
+    if (passwordError) return NextResponse.json({ error: passwordError }, { status: 400 });
     data.passwordHash = hashPassword(String(body.password));
   }
 

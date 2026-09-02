@@ -7,6 +7,7 @@ import { useI18n } from "@/lib/i18n";
 import CursorField from "@/components/CursorField";
 import TiltPanel from "@/components/TiltPanel";
 import Logo from "@/components/Logo";
+import { PASSWORD_HINT } from "@/lib/passwordPolicy";
 
 function RedefinirSenhaForm() {
   const searchParams = useSearchParams();
@@ -80,6 +81,7 @@ function RedefinirSenhaForm() {
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
                 />
+                <small style={{ fontSize: 11, fontWeight: 400, color: "var(--ink-mute)" }}>{PASSWORD_HINT}</small>
               </label>
               <label className="auth-field">
                 <span>Confirmar senha</span>

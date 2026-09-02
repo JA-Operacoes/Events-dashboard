@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth";
 import { Checkbox } from "@/components/ui";
 import { notifySuccess, notifyError, confirmDanger, showDetails } from "@/lib/swal";
+import { PASSWORD_HINT } from "@/lib/passwordPolicy";
 
 type EventWithEditions = {
   id: string;
@@ -215,7 +216,7 @@ function EditUserRow({
       <td colSpan={4} style={{ padding: 0 }}>
         <div className="panel" style={{ margin: "8px 10px", border: "1px solid var(--accent)" }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ display: "flex", gap: 10 }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
               <input
                 type="email"
                 value={email}
@@ -224,15 +225,18 @@ function EditUserRow({
                 style={{ flex: 1 }}
                 placeholder="e-mail"
               />
-              <input
-                type="text"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="input"
-                style={{ flex: 1 }}
-                placeholder="nova senha (deixe em branco para manter a atual)"
-                minLength={8}
-              />
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
+                <input
+                  type="text"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="input"
+                  style={{ width: "100%" }}
+                  placeholder="nova senha (deixe em branco para manter a atual)"
+                  minLength={8}
+                />
+                {password && <small style={{ fontSize: 11, color: "var(--ink-mute)" }}>{PASSWORD_HINT}</small>}
+              </div>
             </div>
 
             <div>
@@ -381,7 +385,7 @@ export default function AdminUsuariosPage() {
           </div>
         </div>
         <form onSubmit={handleCreate} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ display: "flex", gap: 10 }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
             <input
               type="email"
               placeholder="e-mail"
@@ -391,16 +395,19 @@ export default function AdminUsuariosPage() {
               className="input"
               style={{ flex: 1 }}
             />
-            <input
-              type="text"
-              placeholder="senha inicial (mín. 8 caracteres)"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              minLength={8}
-              className="input"
-              style={{ flex: 1 }}
-            />
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
+              <input
+                type="text"
+                placeholder="senha inicial"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                minLength={8}
+                className="input"
+                style={{ width: "100%" }}
+              />
+              <small style={{ fontSize: 11, color: "var(--ink-mute)" }}>{PASSWORD_HINT}</small>
+            </div>
           </div>
 
           <div>

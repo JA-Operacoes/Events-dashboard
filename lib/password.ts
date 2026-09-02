@@ -1,5 +1,7 @@
 import { randomBytes, scryptSync, timingSafeEqual } from "crypto";
 
+export { PASSWORD_HINT, validatePasswordPolicy } from "@/lib/passwordPolicy";
+
 /**
  * Hash de senha com scrypt (nativo do Node — sem dependência extra, sem
  * binário nativo pra compilar no Windows). Formato salvo: "salt:hash", ambos

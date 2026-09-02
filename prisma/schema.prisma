@@ -173,3 +173,18 @@ model PasswordResetToken {
   @@index([userId])
   @@map("password_reset_tokens")
 }
+
+/// Registro de tentativa de login mal-sucedida — usado pro rate limit em
+/// /api/auth/login. Persistido no banco (não em memória) porque a app roda
+/// serverless na Vercel: cada invocação pode cair numa instância diferente,
+/// então um contador em memória não pegaria tentativas espalhadas entre elas.
+/// Linhas velhas (fora da janela de rate limit) são só ignoradas na consulta —
+/// não precisam de limpeza ativa, o volume é baixo.
+model LoginAttempt {
+  id        String   @id @default(cuid())
+  email     String
+  createdAt DateTime @default(now())
+
+  @@index([email, createdAt])
+  @@map("login_attempts")
+}
