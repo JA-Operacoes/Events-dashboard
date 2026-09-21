@@ -11,14 +11,36 @@
   --ink:            #f2f2f0;
   --ink-dim:        #9a9da3;
   --ink-mute:       #5d6067;
-  --accent:         #e53939;
   --accent-soft:    rgba(229, 57, 57, 0.14);
+  --accent:         #e53939;
   --blue:           #347cf0;
   --amber:          #eed04b;
   --teal:           #0d9488;
   --violet:         #724bcc;
   --red:            #f43f5e;
   --good:           #10b981;
+  /* Cores de série de gráfico (donut por serviço, por categoria...). Evento
+     grande sobe de 10 a 20 relatórios, e cada um vira uma fatia — por isso a
+     paleta vai até 20, no esquema do Tableau-20: 10 matizes espaçados nas
+     posições 1-10 (as 5 primeiras são as do tema) e as mesmas 10 famílias em
+     tom claro nas posições 11-20. Geradas por busca com ΔE/contraste
+     verificados; não editar no olho. Não usar em UI: --red/--good têm
+     significado de status e estas não têm nenhum. */
+  --chart-6:        #41c86e;
+  --chart-7:        #d846a2;
+  --chart-8:        #2fbeda;
+  --chart-9:        #dd873c;
+  --chart-10:       #9ba4b0;
+  --chart-11:       #e99696;
+  --chart-12:       #95b8ef;
+  --chart-13:       #f0e3a8;
+  --chart-14:       #26dccb;
+  --chart-15:       #b09fd9;
+  --chart-16:       #95d5aa;
+  --chart-17:       #e19dc8;
+  --chart-18:       #8ad2e0;
+  --chart-19:       #e3ba96;
+  --chart-20:       #bcc9dc;
   --mono: "SFMono-Regular", ui-monospace, "Cascadia Code", Consolas, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
 }
@@ -43,6 +65,26 @@ html[data-theme="light"] {
   --violet:         #7c3aed;
   --red:            #e11d48;
   --good:           #059669;
+  /* mesmas 10 famílias, ajustadas para o card branco: tons cheios escurecidos
+     nas posições 6-10 e as variantes claras nas 11-20, cada uma empurrada até
+     bater contraste mínimo contra o branco. Sem laranja puro nas posições
+     baixas: no claro o --amber já é uma terracota (#b45309) e as duas ficavam
+     indistinguíveis lado a lado no donut. */
+  --chart-6:        #15843a;
+  --chart-7:        #9a1d6c;
+  --chart-8:        #0e6e8b;
+  --chart-9:        #7e4c30;
+  --chart-10:       #607085;
+  --chart-11:       #dc7575;
+  --chart-12:       #6790e9;
+  --chart-13:       #ee914a;
+  --chart-14:       #1abaac;
+  --chart-15:       #9767ea;
+  --chart-16:       #2ac05c;
+  --chart-17:       #d65ca9;
+  --chart-18:       #33b8e1;
+  --chart-19:       #bd896b;
+  --chart-20:       #87a3c9;
 }
 
 * { box-sizing: border-box; }

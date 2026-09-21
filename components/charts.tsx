@@ -3,7 +3,33 @@
 import { useState } from "react";
 import { money, int } from "@/components/ui";
 
-const PALETTE = ["var(--accent)", "var(--blue)", "var(--amber)", "var(--teal)", "var(--violet)"];
+// 20 cores porque um evento grande sobe de 10 a 20 relatórios e cada um vira
+// uma série. As 10 primeiras são matizes distintos (começando pelas cores do
+// tema), as 10 últimas são as mesmas famílias em tom claro — então uma edição
+// com 8 serviços usa só matizes diferentes, e uma com 18 só repete família
+// quando já passou por todos. Acima de 20 o índice dá a volta.
+const PALETTE = [
+  "var(--accent)",
+  "var(--blue)",
+  "var(--amber)",
+  "var(--teal)",
+  "var(--violet)",
+  "var(--chart-6)",
+  "var(--chart-7)",
+  "var(--chart-8)",
+  "var(--chart-9)",
+  "var(--chart-10)",
+  "var(--chart-11)",
+  "var(--chart-12)",
+  "var(--chart-13)",
+  "var(--chart-14)",
+  "var(--chart-15)",
+  "var(--chart-16)",
+  "var(--chart-17)",
+  "var(--chart-18)",
+  "var(--chart-19)",
+  "var(--chart-20)",
+];
 
 /* ------------------------------- Donut ---------------------------------- */
 
