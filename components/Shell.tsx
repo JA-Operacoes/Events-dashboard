@@ -19,6 +19,35 @@ import {
 } from "@/components/icons";
 import CursorField from "@/components/CursorField";
 import Logo from "@/components/Logo";
+import { MODULES, editionModules, moduleForPath, type ModuleKey } from "@/lib/modules";
+import type { Key } from "@/lib/i18n";
+
+const MODULE_ICON: Record<ModuleKey, typeof IconFinanceiro> = {
+  financeiro: IconFinanceiro,
+  operacional: IconOperacional,
+  credenciamento: IconCredenciamento,
+};
+
+/**
+ * A edição selecionada não contratou o módulo desta URL. Esconder da sidebar
+ * não basta — link salvo, histórico do navegador e troca de edição com a
+ * página já aberta chegam aqui.
+ */
+function ModuleOff({ label }: { label: string }) {
+  return (
+    <div className="empty" style={{ marginTop: 24 }}>
+      <div className="g">⃠</div>
+      <strong>{label} não está habilitado nesta edição</strong>
+      <span>
+        Escolha outra edição no menu lateral ou peça a um administrador para habilitar o módulo em Administração →
+        Eventos.
+      </span>
+      <Link className="btn" href="/" style={{ marginTop: 12 }}>
+        Voltar para a visão geral
+      </Link>
+    </div>
+  );
+}
 
 function EventSwitcher() {
   const { events, loading, event, edition, setEventId, setEditionId } = useEvent();
@@ -113,7 +142,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   const { theme, setTheme } = useTheme();
 
   const { session, isAdmin, logout } = useAuth();
-  const { event } = useEvent();
+  const { event, edition } = useEvent();
   const hideBranding = !!event?.hideBranding;
 
   // abaixo do breakpoint mobile a sidebar vira um drawer — fechado por padrão,
@@ -137,12 +166,21 @@ export default function Shell({ children }: { children: React.ReactNode }) {
     }
   }, [event?.accentColor, theme]);
 
+  // só os módulos contratados nesta edição entram na navegação
+  const enabled = editionModules(edition);
   const NAV = [
     { href: "/", Icon: IconOverview, label: t("shell.nav.overview") },
-    { href: "/financeiro", Icon: IconFinanceiro, label: t("shell.nav.financeiro") },
-    { href: "/operacional", Icon: IconOperacional, label: t("shell.nav.operacional") },
-    { href: "/credenciamento", Icon: IconCredenciamento, label: t("shell.nav.credenciamento") },
+    ...MODULES.filter((m) => enabled.includes(m.key)).map((m) => ({
+      href: m.href,
+      Icon: MODULE_ICON[m.key],
+      label: t(m.navKey as Key),
+    })),
   ];
+
+  // enquanto a lista de eventos carrega, `edition` é null e editionModules()
+  // devolve tudo — o bloqueio só vale quando já se sabe o que a edição tem.
+  const currentModule = moduleForPath(pathname);
+  const blockedModule = currentModule && edition && !enabled.includes(currentModule) ? currentModule : null;
 
   const ADMIN_NAV = [
     { href: "/admin/eventos", Icon: IconCalendar, label: "Eventos" },
@@ -259,7 +297,13 @@ export default function Shell({ children }: { children: React.ReactNode }) {
           </div>
         </aside>
 
-        <main className="main">{children}</main>
+        <main className="main">
+          {blockedModule ? (
+            <ModuleOff label={t(MODULES.find((m) => m.key === blockedModule)!.navKey as Key)} />
+          ) : (
+            children
+          )}
+        </main>
       </div>
     </>
   );

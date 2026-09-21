@@ -436,9 +436,12 @@ const OPERACIONAL_STATUS_OPTIONS: { value: ServicoStatus; label: string }[] = [
 
 export function SpreadsheetImportOperacional({
   eventId,
+  contexto = [],
   onImported,
 }: {
   eventId: string | null;
+  /** Nome do evento e rótulo da edição — descartados do nome do arquivo, já que se repetem em todos eles. */
+  contexto?: string[];
   onImported: (pedidos: PedidoServico[], fileName: string) => void;
 }) {
   return (
@@ -455,7 +458,7 @@ export function SpreadsheetImportOperacional({
       extraField={{
         label: "Serviço desta planilha",
         hint: "vem do nome do arquivo — corrija se ficou estranho",
-        derive: servicoFromFileName,
+        derive: (fileName) => servicoFromFileName(fileName, contexto),
       }}
       onImported={onImported}
     />

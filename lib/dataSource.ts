@@ -122,11 +122,17 @@ export type OperacionalData = {
   kpis: {
     /** Soma das quantidades pedidas (ex.: 12 recepcionistas). */
     totalItens: number | null;
-    /** Soma de quantidade × dias — o volume real de operação. */
+    /**
+     * Pessoa-dia: soma de quantidade × dias, contando só os pedidos que
+     * informam dias. Nulo quando nenhum informa — nesse caso a planilha não
+     * descreve duração e não há diária a calcular.
+     */
     totalDiarias: number | null;
     qtdPedidos: number | null;
     qtdExpositores: number | null;
   };
+  /** Itens fora do cálculo de diárias (pedidos sem dias informados). */
+  itensSemDias: number;
   servicos: Array<{ label: string; value: number }>;
   topExpositores: Array<{ name: string; value: number }>;
   statusBreakdown: Array<{ label: ServicoStatus; value: number }>;

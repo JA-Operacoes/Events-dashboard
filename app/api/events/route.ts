@@ -34,6 +34,7 @@ export async function GET(req: NextRequest) {
           label: ed.label,
           bannerUrl: ed.bannerUrl,
           showTitleOverBanner: ed.showTitleOverBanner,
+          modulos: ed.modulos,
         })),
     }))
     .filter((ev) => ev.editions.length > 0);

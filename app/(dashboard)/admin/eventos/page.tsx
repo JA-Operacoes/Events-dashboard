@@ -5,8 +5,9 @@ import { useAuth } from "@/lib/auth";
 import { useEvent } from "@/lib/eventContext";
 import { Checkbox } from "@/components/ui";
 import { notifySuccess, notifyError, confirmDanger } from "@/lib/swal";
+import { MODULES, editionModules, type ModuleKey } from "@/lib/modules";
 
-type Edition = { id: string; ano: number; label: string; _count: { access: number } };
+type Edition = { id: string; ano: number; label: string; modulos: string[]; _count: { access: number } };
 type EventRow = {
   id: string;
   nome: string;
@@ -259,6 +260,37 @@ export default function AdminEventosPage() {
     load();
   }
 
+  // Liga/desliga um módulo na edição. Aplica na hora (é um switch, não um
+  // campo de texto) e resincroniza com o banco no fim; se o PATCH falhar,
+  // load() devolve o estado real em vez de deixar o checkbox mentindo.
+  async function handleToggleModulo(editionId: string, modulo: ModuleKey, checked: boolean) {
+    const atual = editionModules(
+      events.flatMap((ev) => ev.editions).find((ed) => ed.id === editionId) ?? null
+    );
+    const modulos = checked ? [...new Set([...atual, modulo])] : atual.filter((m) => m !== modulo);
+
+    setEvents((prev) =>
+      prev.map((ev) => ({
+        ...ev,
+        editions: ev.editions.map((ed) => (ed.id === editionId ? { ...ed, modulos } : ed)),
+      }))
+    );
+
+    const res = await fetch(`/api/admin/editions/${editionId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ modulos }),
+    });
+    if (!res.ok) {
+      notifyError("Não foi possível salvar os módulos", "Nada mudou — tente de novo.");
+      load();
+      return;
+    }
+    // a sidebar e a visão geral leem a mesma configuração: sem isso, o admin
+    // desligaria um módulo e continuaria vendo o item no menu até recarregar.
+    refreshEvents();
+  }
+
   async function handleDeleteEdition(id: string) {
     const ok = await confirmDanger("Remover esta edição?", "Os dados financeiros/credenciamento importados pra ela também somem — não dá pra desfazer.");
     if (!ok) return;
@@ -422,19 +454,42 @@ export default function AdminEventosPage() {
                 </div>
 
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 16 }}>
-                  {ev.editions.map((ed) => (
-                    <div className="status-row" key={ed.id}>
-                      <span className="status-left">
-                        <strong style={{ fontWeight: 600 }}>{ed.label}</strong>
-                        <span style={{ color: "var(--ink-mute)" }}>
-                          ({ed.ano}) · {ed._count.access} usuário(s) com acesso
-                        </span>
-                      </span>
-                      <button className="btn" type="button" onClick={() => handleDeleteEdition(ed.id)}>
-                        ×
-                      </button>
-                    </div>
-                  ))}
+                  {ev.editions.map((ed) => {
+                    const ativos = editionModules(ed);
+                    return (
+                      <div className="edition-row" key={ed.id}>
+                        <div className="status-row" style={{ border: "none", padding: "2px 0" }}>
+                          <span className="status-left">
+                            <strong style={{ fontWeight: 600 }}>{ed.label}</strong>
+                            <span style={{ color: "var(--ink-mute)" }}>
+                              ({ed.ano}) · {ed._count.access} usuário(s) com acesso
+                            </span>
+                          </span>
+                          <button className="btn" type="button" onClick={() => handleDeleteEdition(ed.id)}>
+                            ×
+                          </button>
+                        </div>
+                        <div className="edition-modules">
+                          <span className="section-label" style={{ margin: 0 }}>
+                            Módulos desta edição
+                          </span>
+                          {MODULES.map((m) => (
+                            <Checkbox
+                              key={m.key}
+                              checked={ativos.includes(m.key)}
+                              onChange={(checked) => handleToggleModulo(ed.id, m.key, checked)}
+                              label={m.label}
+                            />
+                          ))}
+                          {!ativos.length && (
+                            <span style={{ fontSize: 11.5, color: "var(--amber)" }}>
+                              sem módulos — quem abrir esta edição vê só a visão geral
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                   {!ev.editions.length && <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>sem edições ainda</span>}
                 </div>
 

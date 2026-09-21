@@ -5,6 +5,8 @@ export type Edition = {
   bannerUrl?: string | null;
   /** Quando o banner já traz o nome/identidade do evento, o admin pode desligar o texto sobreposto. Default: true. */
   showTitleOverBanner?: boolean;
+  /** Módulos contratados nesta edição — ver lib/modules.ts. Ausente = todos (payload antigo). */
+  modulos?: string[];
 };
 export type EventOption = {
   id: string;

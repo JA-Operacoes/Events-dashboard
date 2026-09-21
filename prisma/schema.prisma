@@ -76,6 +76,11 @@ model Edition {
   eventId             String
   ano                 Int
   label               String
+  /// Módulos contratados nesta edição ("financeiro", "operacional",
+  /// "credenciamento"). Uma edição pode ter financeiro e credenciamento e a
+  /// seguinte só operacional — por isso fica na edição, não no evento. Lista
+  /// vazia = nenhum módulo, só a visão geral. Ver lib/modules.ts.
+  modulos             String[] @default(["financeiro", "operacional", "credenciamento"])
   bannerUrl           String?
   showTitleOverBanner Boolean  @default(true)
   createdAt           DateTime @default(now())

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { SESSION_COOKIE, verifySession, type SessionPayload } from "@/lib/session";
+import { prisma } from "@/lib/prisma";
+import { editionModules, type ModuleKey } from "@/lib/modules";
 
 /**
  * Lê e valida o cookie de sessão dentro de uma rota de API (Node runtime).
@@ -59,4 +61,25 @@ export async function requireEditionAccess(req: NextRequest, editionId: string):
   const allowed = session.allowedEditionIds === "all" || session.allowedEditionIds.includes(editionId);
   if (!allowed) return NextResponse.json({ error: "Sem acesso a esta edição" }, { status: 403 });
   return session;
+}
+
+/**
+ * Acesso à edição + módulo contratado nela. Esconder o item na sidebar não
+ * impede ninguém de chamar /api/financeiro/import direto numa edição que só
+ * contratou operacional — quem barra de verdade é isto.
+ */
+export async function requireEditionModule(
+  req: NextRequest,
+  editionId: string,
+  modulo: ModuleKey
+): Promise<SessionPayload | NextResponse> {
+  const auth = await requireEditionAccess(req, editionId);
+  if (isResponse(auth)) return auth;
+
+  const edition = await prisma.edition.findUnique({ where: { id: editionId }, select: { modulos: true } });
+  if (!edition) return NextResponse.json({ error: "Edição não encontrada" }, { status: 404 });
+  if (!editionModules(edition).includes(modulo)) {
+    return NextResponse.json({ error: `O módulo ${modulo} não está habilitado nesta edição` }, { status: 403 });
+  }
+  return auth;
 }

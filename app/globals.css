@@ -691,3 +691,16 @@ td.num, th.num { text-align: right; }
   font-size: 11.5px; color: var(--ink-mute); text-align: center; font-family: var(--mono);
 }
 .footnote code { background: var(--panel-2); border: 1px solid var(--line); padding: 1px 6px; border-radius: 4px; }
+
+/* Admin → Eventos: cada edição vira um bloco com seus módulos contratados
+   logo abaixo do nome, porque a escolha é por edição e não por evento. */
+.edition-row {
+  display: flex; flex-direction: column; gap: 6px;
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+}
+.edition-modules {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px;
+  padding-top: 7px; border-top: 1px dashed var(--line-soft);
+}
+.edition-modules .section-label { flex: none; }
+.edition-modules .ja-checkbox { font-size: 12px; }

@@ -8,6 +8,7 @@ import { useAuth } from "@/lib/auth";
 import { IconFinanceiro, IconOperacional, IconCredenciamento, IconClock } from "@/components/icons";
 import { Checkbox } from "@/components/ui";
 import { notifySuccess, notifyError } from "@/lib/swal";
+import { editionModules } from "@/lib/modules";
 
 const BANNER_ACCEPT = ["image/png", "image/jpeg", "image/webp"];
 const BANNER_MAX_MB = 5;
@@ -16,7 +17,7 @@ const BANNER_MAX_MB = 5;
 const BANNER_MIN_WIDTH = 1200;
 const BANNER_MIN_HEIGHT = 300;
 
-const MODULE_KEYS = [
+const ALL_MODULES = [
   { href: "/financeiro", Icon: IconFinanceiro, accent: "var(--accent)", key: "financeiro" },
   { href: "/operacional", Icon: IconOperacional, accent: "var(--amber)", key: "operacional" },
   { href: "/credenciamento", Icon: IconCredenciamento, accent: "var(--teal)", key: "credenciamento" },
@@ -119,6 +120,12 @@ function EventHero() {
 
 export default function Home() {
   const { t } = useI18n();
+  const { edition } = useEvent();
+
+  // a visão geral lista só o que a edição contratou — um card que leva a uma
+  // tela bloqueada seria um beco sem saída.
+  const enabled = editionModules(edition);
+  const MODULE_KEYS = ALL_MODULES.filter((m) => enabled.includes(m.key));
 
   return (
     <>
@@ -133,6 +140,13 @@ export default function Home() {
             </div>
           </div>
           <div className="status-list">
+            {!MODULE_KEYS.length && (
+              <div className="status-row">
+                <span className="status-left" style={{ color: "var(--ink-mute)" }}>
+                  nenhum módulo habilitado nesta edição
+                </span>
+              </div>
+            )}
             {MODULE_KEYS.map((m) => (
               <div className="status-row" key={m.key}>
                 <span className="status-left">

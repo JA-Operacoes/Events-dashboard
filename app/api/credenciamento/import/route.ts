@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { requireEditionAccess, isResponse } from "@/lib/serverAuth";
+import { requireEditionModule, isResponse } from "@/lib/serverAuth";
 import type { Participante } from "@/lib/dataSource";
 
 export async function GET(req: NextRequest) {
   const editionId = req.nextUrl.searchParams.get("editionId");
   if (!editionId) return NextResponse.json({ error: "editionId é obrigatório" }, { status: 400 });
 
-  const auth = await requireEditionAccess(req, editionId);
+  const auth = await requireEditionModule(req, editionId, "credenciamento");
   if (isResponse(auth)) return auth;
 
   const rows = await prisma.importedParticipante.findMany({ where: { editionId } });
@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "editionId e sourceFile são obrigatórios" }, { status: 400 });
   }
 
-  const auth = await requireEditionAccess(req, editionId);
+  const auth = await requireEditionModule(req, editionId, "credenciamento");
   if (isResponse(auth)) return auth;
 
   await prisma.$transaction([
@@ -64,7 +64,7 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ error: "editionId e sourceFile são obrigatórios" }, { status: 400 });
   }
 
-  const auth = await requireEditionAccess(req, editionId);
+  const auth = await requireEditionModule(req, editionId, "credenciamento");
   if (isResponse(auth)) return auth;
 
   await prisma.importedParticipante.deleteMany({ where: { editionId, sourceFile } });

@@ -524,14 +524,20 @@ export const OPERACIONAL_FIELDS = [
 
 export type OperacionalFieldKey = (typeof OPERACIONAL_FIELDS)[number]["key"];
 
+// Declarado aqui (e não junto dos helpers abaixo) porque OPERACIONAL_FIELD_KEYWORDS
+// referencia esta regex na avaliação do módulo — const não sofre hoisting.
+const LOC_ESTANDE_HEADER = /^loc[a-z.]*\s*\/\s*estande|estande\s*\/\s*loc/;
+
 const OPERACIONAL_FIELD_KEYWORDS: { key: OperacionalFieldKey; patterns: RegExp[] }[] = [
   { key: "cnpj", patterns: [/cnpj/, /\bcpf\b/, /documento/] },
   // "nome fantasia" antes de "expositor": senão o padrão de razão social/nome
   // roubaria a coluna fantasia e sobraria a errada pro expositor.
   { key: "nomeFantasia", patterns: [/fantasia/, /nome comercial/] },
   { key: "expositor", patterns: [/raz[aã]o social/, /expositor/, /empresa/, /cliente/, /contratante/] },
+  // "Loc. / Estande" primeiro: é uma coluna só com os dois valores, e o
+  // padrão de estande a roubaria antes de localizacao ter chance.
+  { key: "localizacao", patterns: [LOC_ESTANDE_HEADER, /localiza/, /pavilh/, /setor/, /\brua\b/, /^loc\b/, /local/] },
   { key: "estande", patterns: [/estande/, /stand/, /\bbox\b/, /booth/] },
-  { key: "localizacao", patterns: [/localiza/, /pavilh/, /setor/, /\brua\b/, /local/] },
   { key: "dias", patterns: [/dias/, /di[aá]ria/, /days/] },
   // hora antes de data: "Hora Final" não pode ser capturada pelo padrão de
   // data final, e "Data Início" não pode ser capturada pelo de hora.
@@ -545,19 +551,104 @@ const OPERACIONAL_FIELD_KEYWORDS: { key: OperacionalFieldKey; patterns: RegExp[]
 ];
 
 /**
- * O serviço não vem de coluna nenhuma — cada planilha É um serviço, então o
- * nome sai do arquivo ("Contratação Recepcionista.xls" → "Recepcionista").
- * Tira extensão, o verbo do começo ("contratação de", "pedido de"...) e
- * sufixos de versão que o pessoal costuma anexar ("... 2026", "... (2)").
- * O admin ainda pode corrigir o resultado antes de confirmar o import.
+ * Nome do arquivo como ele deve APARECER na tela: sem a extensão e sem o
+ * carimbo de data/versão que costuma vir grudado no fim ("Recepcionista
+ * 03-09-2026.xls" → "Recepcionista"). O nome completo continua sendo a chave
+ * real do import — é ele que identifica o arquivo no banco e o que permite
+ * reenviar a versão atualizada substituindo só as linhas dele.
  */
-export function servicoFromFileName(fileName: string): string {
-  let s = fileName.replace(/\.[^.]+$/, "");
-  s = s.replace(/^\s*(contrata[cç][aã]o|contrato|pedidos?|solicita[cç][aã]o|planilha|relat[oó]rio)\s*(de|da|do)?\s*/i, "");
-  s = s.replace(/\s*[-–]?\s*(v?\d{1,4}|\(\d+\))\s*$/i, "");
-  s = s.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
-  if (!s) return fileName;
-  return s.charAt(0).toUpperCase() + s.slice(1);
+export function nomeArquivoCurto(fileName: string): string {
+  const semExtensao = fileName.replace(/\.[^.]+$/, "");
+  let s = semExtensao;
+
+  // "(1)" de cópia, "v2" de versão
+  s = s.replace(/[\s_-]*(\(\d+\)|v\d+)\s*$/i, "");
+
+  // Data no fim. A ISO vem primeiro de propósito: aplicada depois, a regra de
+  // dd-mm-aaaa casaria o "26-09-03" de "..._2026-09-03" e deixaria um "20"
+  // pendurado no nome. O separador antes da data é exigido para não morder
+  // dígitos de um número maior.
+  s = s.replace(/(^|[\s_-])\d{4}[-_./]\d{1,2}[-_./]\d{1,2}\s*$/, "");
+  s = s.replace(/(^|[\s_-])\d{1,2}[-_./]\d{1,2}([-_./]\d{2,4})?\s*$/, "");
+  s = s.replace(/(^|[\s_-])\d{8}\s*$/, "");
+
+  // o ano sozinho FICA: é o que distingue "Recepcionista 2025" de
+  // "Recepcionista 2026" na lista de arquivos importados.
+  s = s.replace(/[\s_-]+$/, "").trim();
+  return s || semExtensao;
+}
+
+/**
+ * Palavras que aparecem no nome do arquivo sem dizer QUAL serviço ele é:
+ * o tipo de documento, ligações, marcadores de versão/revisão. Tudo isso é
+ * descartado — o que sobra é a palavra-chave que vira o nome do serviço.
+ */
+const RUIDO_NOME_ARQUIVO = new Set([
+  "contratacao", "contratacoes", "contrato", "contratos", "contratada", "contratado",
+  "pedido", "pedidos", "solicitacao", "solicitacoes", "requisicao",
+  "planilha", "planilhas", "relatorio", "relatorios", "lista", "listagem", "listas",
+  "cadastro", "controle", "mapa", "resumo", "base", "dados", "export", "exportacao",
+  "geral", "final", "finalizado", "atualizado", "atualizada", "atualizacao",
+  "novo", "nova", "copia", "revisao", "versao", "parcial", "consolidado",
+  "de", "da", "do", "das", "dos", "para", "por", "com", "e",
+]);
+
+/**
+ * O serviço não vem de coluna nenhuma — cada planilha É um serviço, então o
+ * nome sai do arquivo. Em vez de tirar só o prefixo, joga fora toda palavra
+ * que não identifica o serviço: tipo de documento, ano, data, versão, número
+ * solto e (quando informado) o nome do evento e da edição, que se repetem em
+ * todos os arquivos e por isso não distinguem nada.
+ *
+ *   "Contratação Recepcionista.xls"                        → "Recepcionista"
+ *   "Relatorio_Contratacao_Limpeza_SetExpo_2026_v2.xlsx"   → "Limpeza"
+ *   "PEDIDO DE SEGURANCA - 03-09-2026 (1).xls"             → "Seguranca"
+ *
+ * O resultado continua editável antes de confirmar o import — heurística
+ * nenhuma acerta todo nome de arquivo que alguém inventa.
+ */
+export function servicoFromFileName(fileName: string, contexto: string[] = []): string {
+  const semExtensao = fileName.replace(/\.[^.]+$/, "");
+
+  // o nome do evento/edição entra como ruído: "SetExpo 2026" aparece em todos
+  // os arquivos do evento, então não é o que diferencia um serviço do outro.
+  const ruidoContexto = new Set(
+    contexto
+      .flatMap((c) => c.split(/[\s_\-]+/))
+      .map((w) => normalize(w))
+      .filter((w) => w.length > 1)
+  );
+
+  const palavras = semExtensao
+    .split(/[\s_\-.]+/)
+    .map((w) => w.trim())
+    .filter(Boolean)
+    .filter((w) => {
+      const n = normalize(w);
+      if (!n) return false;
+      if (/^\(?\d+\)?$/.test(n)) return false;            // "2026", "(1)", "03", "20260903"
+      if (/^(xls|xlsx|csv|ods)$/.test(n)) return false;     // extensão escrita no meio do nome
+      if (/^v\d+$/.test(n)) return false;                  // "v2"
+      if (/^\d{1,2}\/\d{1,2}(\/\d{2,4})?$/.test(n)) return false; // "03/09/2026"
+      if (RUIDO_NOME_ARQUIVO.has(n)) return false;
+      if (ruidoContexto.has(n)) return false;
+      return true;
+    });
+
+  if (!palavras.length) return semExtensao.trim() || fileName;
+
+  // Sobrando mais de uma palavra, fica com a mais longa: em "Recepcionista
+  // Bilingue" o serviço é recepcionista, e o resto costuma ser qualificador.
+  // Duas palavras curtas e parecidas ("Painel LED") seguem juntas.
+  const principal = palavras.length <= 2 ? palavras.join(" ") : palavras.sort((a, b) => b.length - a.length)[0];
+
+  // Capitaliza sem destruir sigla: LED, TV, AV vieram em caixa alta de
+  // propósito e viram "Led"/"Tv" se passarem por toLowerCase cego.
+  return principal
+    .trim()
+    .split(/\s+/)
+    .map((w) => (w.length <= 3 && w === w.toUpperCase() ? w : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()))
+    .join(" ");
 }
 
 export function suggestOperacionalMapping(headers: string[]): ColumnMapping<OperacionalFieldKey> {
@@ -573,6 +664,24 @@ const OPERACIONAL_STATUS_KEYWORDS: { value: ServicoStatus; patterns: RegExp[] }[
 
 export function suggestOperacionalStatusMapping(values: string[]): StatusMapping<ServicoStatus> {
   return suggestValueMapping(values, OPERACIONAL_STATUS_KEYWORDS);
+}
+
+/**
+ * Algumas planilhas trazem local e estande numa coluna só ("Loc. / Estande"
+ * com valor "XXX / X123") e outras em colunas separadas. Sem separar, o mesmo
+ * lugar vira dois rótulos diferentes no painel por localização — "XXX" numa
+ * planilha e "XXX / X123" na outra — e nada soma junto.
+ */
+
+function isLocEstandeHeader(header: string | undefined): boolean {
+  return !!header && LOC_ESTANDE_HEADER.test(normalize(header));
+}
+
+/** "XXX / X123" → ["XXX", "X123"]. Sem a barra, tudo vira localização. */
+function splitLocEstande(valor: string): [string, string] {
+  const i = valor.indexOf("/");
+  if (i === -1) return [valor.trim(), ""];
+  return [valor.slice(0, i).trim(), valor.slice(i + 1).trim()];
 }
 
 /** Quantidade e nº de dias são contagens inteiras — "5", "5 dias", "05". */
@@ -621,6 +730,19 @@ export function mapRowsToPedidos(
   // diz qual serviço é, nunca uma coluna da planilha.
   const nomeServico = servico?.trim() || servicoFromFileName(sourceFile);
 
+  // coluna única "Loc. / Estande": o estande sai dela, a não ser que a planilha
+  // também tenha uma coluna de estande própria (aí a dela manda).
+  const combinada = isLocEstandeHeader(mapping.localizacao);
+  const localizacaoDaLinha = (r: string[]) => {
+    if (iLocalizacao < 0) return "";
+    return combinada ? splitLocEstande(r[iLocalizacao])[0] : r[iLocalizacao];
+  };
+  const estandeDaLinha = (r: string[]) => {
+    if (iEstande >= 0 && r[iEstande]) return r[iEstande];
+    if (combinada && iLocalizacao >= 0) return splitLocEstande(r[iLocalizacao])[1];
+    return "";
+  };
+
   return table.rows.map((r) => {
     const rawStatus = iStatus >= 0 ? r[iStatus] : "";
     const dataInicio = iDataInicio >= 0 ? r[iDataInicio] : "";
@@ -637,8 +759,8 @@ export function mapRowsToPedidos(
       expositor: iExpositor >= 0 ? r[iExpositor] : "",
       nomeFantasia: iNomeFantasia >= 0 ? r[iNomeFantasia] : "",
       cnpj: iCnpj >= 0 ? r[iCnpj] : "",
-      estande: iEstande >= 0 ? r[iEstande] : "",
-      localizacao: iLocalizacao >= 0 ? r[iLocalizacao] : "",
+      estande: estandeDaLinha(r),
+      localizacao: localizacaoDaLinha(r),
       quantidade,
       dias,
       dataInicio,
@@ -665,9 +787,15 @@ export function aggregateOperacional(pedidos: PedidoServico[]): OperacionalData 
   // de volume, mas continua na tabela e na contagem por status.
   const ativos = pedidos.filter((p) => p.status !== "cancelado");
   const totalItens = ativos.reduce((s, p) => s + p.quantidade, 0);
-  // sem coluna de dias a planilha não descreve diária nenhuma — conta 1 dia
-  // por item pra não zerar o KPI (e fica igual ao total de itens).
-  const totalDiarias = ativos.reduce((s, p) => s + p.quantidade * (p.dias ?? 1), 0);
+  // Diária é pessoa-dia: 2 recepcionistas por 5 dias = 10. Só entram as linhas
+  // que informam dias (na planilha ou pelo intervalo de datas) — contar 1 dia
+  // para quem não informa misturaria pessoa-dia com pessoa e o total deixaria
+  // de significar qualquer coisa. Sem nenhuma linha com dias o KPI fica nulo,
+  // e a tela mostra que não há dado em vez de um número inventado.
+  const comDias = ativos.filter((p) => p.dias != null);
+  const totalDiarias = comDias.length
+    ? comDias.reduce((s, p) => s + p.quantidade * (p.dias as number), 0)
+    : null;
 
   const servicoTotals = new Map<string, number>();
   for (const p of ativos) if (p.servico) servicoTotals.set(p.servico, (servicoTotals.get(p.servico) ?? 0) + p.quantidade);
@@ -689,6 +817,9 @@ export function aggregateOperacional(pedidos: PedidoServico[]): OperacionalData 
       qtdPedidos: pedidos.length,
       qtdExpositores: new Set(ativos.map((p) => p.expositor).filter(Boolean)).size,
     },
+    // quantos itens ficaram de fora do cálculo de diárias, para a tela poder
+    // avisar que o número cobre só parte dos pedidos
+    itensSemDias: totalItens - comDias.reduce((s, p) => s + p.quantidade, 0),
     servicos: Array.from(servicoTotals, ([label, value]) => ({ label, value })),
     topExpositores: Array.from(expositorTotals, ([name, value]) => ({ name, value }))
       .sort((a, b) => b.value - a.value)

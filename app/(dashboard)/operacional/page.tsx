@@ -7,7 +7,7 @@ import { useAuth } from "@/lib/auth";
 import { fetchOperacional, type OperacionalData, type OperacionalFilters, type PedidoServico } from "@/lib/dataSource";
 import { ConnChip, Empty, EmptyTableRow, KpiRow, int } from "@/components/ui";
 import { SpreadsheetImportOperacional } from "@/components/SpreadsheetImport";
-import { aggregateOperacional, mergeImportedPedidos } from "@/lib/spreadsheetImport";
+import { aggregateOperacional, mergeImportedPedidos, nomeArquivoCurto } from "@/lib/spreadsheetImport";
 import { Donut, BarList, StatusBars } from "@/components/charts";
 import { getCached, setCached } from "@/lib/pageCache";
 import { formatRelativeTime, parseDateLoose } from "@/lib/period";
@@ -219,7 +219,16 @@ export default function OperacionalPage() {
 
   const KPI_DEFS = [
     { key: "totalItens", label: t("operacional.kpi.itens"), fmt: int },
-    { key: "totalDiarias", label: t("operacional.kpi.diarias"), fmt: int },
+    {
+      key: "totalDiarias",
+      // o rótulo avisa quando parte dos pedidos não informa dias e ficou de
+      // fora da conta — sem isso o número pareceria cobrir a edição inteira.
+      label:
+        data && data.itensSemDias > 0
+          ? `${t("operacional.kpi.diarias")} · ${data.itensSemDias} item(ns) sem dias`
+          : t("operacional.kpi.diarias"),
+      fmt: int,
+    },
     { key: "qtdPedidos", label: t("operacional.kpi.pedidos"), fmt: int },
     { key: "qtdExpositores", label: t("operacional.kpi.expositores"), fmt: int },
   ] as const;
@@ -292,7 +301,13 @@ export default function OperacionalPage() {
           ) : (
             lastUpdatedAt && <span className="last-updated-chip">atualizado {formatRelativeTime(lastUpdatedAt)}</span>
           )}
-          {canManageData && !apiData && <SpreadsheetImportOperacional eventId={eventId} onImported={handleImported} />}
+          {canManageData && !apiData && (
+            <SpreadsheetImportOperacional
+              eventId={eventId}
+              contexto={[event?.name ?? "", edition?.label ?? ""]}
+              onImported={handleImported}
+            />
+          )}
           {canManageData && (
             <button className="btn primary" type="button" onClick={load}>
               {t("common.sync")}
@@ -317,8 +332,8 @@ export default function OperacionalPage() {
         <div className="import-files-bar">
           <span>Arquivos importados:</span>
           {importedFiles.map(([name, count]) => (
-            <span className="import-file-chip" key={name}>
-              {name} ({count})
+            <span className="import-file-chip" key={name} title={name}>
+              {nomeArquivoCurto(name)} ({count})
               <button type="button" onClick={() => removeImportedFile(name)} aria-label={`Remover ${name}`}>
                 ×
               </button>
@@ -557,8 +572,6 @@ export default function OperacionalPage() {
           )}
         </div>
       </div>
-
-      <div className="footnote">{t("operacional.footnote")}</div>
     </>
   );
 }
