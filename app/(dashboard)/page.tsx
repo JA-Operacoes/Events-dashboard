@@ -5,7 +5,7 @@ import { useRef } from "react";
 import { useEvent } from "@/lib/eventContext";
 import { useI18n } from "@/lib/i18n";
 import { useAuth } from "@/lib/auth";
-import { IconFinanceiro, IconCredenciamento, IconClock } from "@/components/icons";
+import { IconFinanceiro, IconOperacional, IconCredenciamento, IconClock } from "@/components/icons";
 import { Checkbox } from "@/components/ui";
 import { notifySuccess, notifyError } from "@/lib/swal";
 
@@ -18,6 +18,7 @@ const BANNER_MIN_HEIGHT = 300;
 
 const MODULE_KEYS = [
   { href: "/financeiro", Icon: IconFinanceiro, accent: "var(--accent)", key: "financeiro" },
+  { href: "/operacional", Icon: IconOperacional, accent: "var(--amber)", key: "operacional" },
   { href: "/credenciamento", Icon: IconCredenciamento, accent: "var(--teal)", key: "credenciamento" },
 ] as const;
 

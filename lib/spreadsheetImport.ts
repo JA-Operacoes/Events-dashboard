@@ -13,6 +13,7 @@
  */
 
 import * as XLSX from "xlsx";
+import { parseDateLoose } from "./period";
 import * as cptable from "xlsx/dist/cpexcel.full.mjs";
 import type {
   FinanceiroData,
@@ -21,6 +22,9 @@ import type {
   CredenciamentoData,
   Participante,
   CredenciamentoStatus,
+  OperacionalData,
+  PedidoServico,
+  ServicoStatus,
 } from "./dataSource";
 
 // .xls binário antigo (BIFF) guarda texto acentuado num codepage (ex.: CP1252),
@@ -494,5 +498,203 @@ export function aggregateCredenciamento(participantes: Participante[]): Credenci
     categorias: Array.from(categoriaTotals, ([label, value]) => ({ label, value })),
     statusBreakdown: Array.from(statusTotals, ([label, value]) => ({ label, value })),
     participantes,
+  };
+}
+
+/* ----------------------------- Operacional ------------------------------ */
+
+export const OPERACIONAL_FIELDS = [
+  { key: "expositor", label: "Expositor (razão social)", required: true },
+  { key: "status", label: "Status", required: true },
+  // Daqui pra baixo é tudo opcional de propósito: cada serviço tem sua
+  // planilha e elas não trazem as mesmas colunas — muitas não têm quantidade
+  // (uma linha = um pedido), algumas usam data/hora e outras só turno.
+  { key: "quantidade", label: "Quantidade", required: false },
+  { key: "nomeFantasia", label: "Nome fantasia", required: false },
+  { key: "cnpj", label: "CNPJ / CPF", required: false },
+  { key: "estande", label: "Nº do estande", required: false },
+  { key: "localizacao", label: "Localização (pavilhão/setor)", required: false },
+  { key: "dias", label: "Nº de dias", required: false },
+  { key: "dataInicio", label: "Data inicial", required: false },
+  { key: "dataFim", label: "Data final", required: false },
+  { key: "horaInicio", label: "Hora inicial", required: false },
+  { key: "horaFim", label: "Hora final", required: false },
+  { key: "turno", label: "Turno", required: false },
+] as const;
+
+export type OperacionalFieldKey = (typeof OPERACIONAL_FIELDS)[number]["key"];
+
+const OPERACIONAL_FIELD_KEYWORDS: { key: OperacionalFieldKey; patterns: RegExp[] }[] = [
+  { key: "cnpj", patterns: [/cnpj/, /\bcpf\b/, /documento/] },
+  // "nome fantasia" antes de "expositor": senão o padrão de razão social/nome
+  // roubaria a coluna fantasia e sobraria a errada pro expositor.
+  { key: "nomeFantasia", patterns: [/fantasia/, /nome comercial/] },
+  { key: "expositor", patterns: [/raz[aã]o social/, /expositor/, /empresa/, /cliente/, /contratante/] },
+  { key: "estande", patterns: [/estande/, /stand/, /\bbox\b/, /booth/] },
+  { key: "localizacao", patterns: [/localiza/, /pavilh/, /setor/, /\brua\b/, /local/] },
+  { key: "dias", patterns: [/dias/, /di[aá]ria/, /days/] },
+  // hora antes de data: "Hora Final" não pode ser capturada pelo padrão de
+  // data final, e "Data Início" não pode ser capturada pelo de hora.
+  { key: "horaInicio", patterns: [/hor(a|ário|ario).*(in[ií]cio|inicial|entrada)/, /(in[ií]cio|inicial|entrada).*hora/] },
+  { key: "horaFim", patterns: [/hor(a|ário|ario).*(fim|final|t[eé]rmino|sa[ií]da)/, /(fim|final|t[eé]rmino|sa[ií]da).*hora/] },
+  { key: "dataInicio", patterns: [/data .*(in[ií]cio|inicial|entrada)/, /(in[ií]cio|inicial).*data/, /^in[ií]cio$/, /^data$/] },
+  { key: "dataFim", patterns: [/data .*(fim|final|t[eé]rmino|sa[ií]da)/, /(fim|final|t[eé]rmino).*data/, /^(fim|final|t[eé]rmino)$/] },
+  { key: "turno", patterns: [/turno/, /per[ií]odo/] },
+  { key: "quantidade", patterns: [/quantidade/, /\bqtd\b/, /\bqtde\b/, /\bqty\b/] },
+  { key: "status", patterns: [/status/, /situa[cç][aã]o/] },
+];
+
+/**
+ * O serviço não vem de coluna nenhuma — cada planilha É um serviço, então o
+ * nome sai do arquivo ("Contratação Recepcionista.xls" → "Recepcionista").
+ * Tira extensão, o verbo do começo ("contratação de", "pedido de"...) e
+ * sufixos de versão que o pessoal costuma anexar ("... 2026", "... (2)").
+ * O admin ainda pode corrigir o resultado antes de confirmar o import.
+ */
+export function servicoFromFileName(fileName: string): string {
+  let s = fileName.replace(/\.[^.]+$/, "");
+  s = s.replace(/^\s*(contrata[cç][aã]o|contrato|pedidos?|solicita[cç][aã]o|planilha|relat[oó]rio)\s*(de|da|do)?\s*/i, "");
+  s = s.replace(/\s*[-–]?\s*(v?\d{1,4}|\(\d+\))\s*$/i, "");
+  s = s.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!s) return fileName;
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+export function suggestOperacionalMapping(headers: string[]): ColumnMapping<OperacionalFieldKey> {
+  return suggestMapping(headers, OPERACIONAL_FIELD_KEYWORDS);
+}
+
+const OPERACIONAL_STATUS_KEYWORDS: { value: ServicoStatus; patterns: RegExp[] }[] = [
+  { value: "cancelado", patterns: [/cancelad/, /desistiu/, /recusad/, /estornad/] },
+  { value: "atendido", patterns: [/atendid/, /entregue/, /conclu[ií]d/, /finalizad/, /executad/, /done/] },
+  { value: "confirmado", patterns: [/confirmad/, /aprovad/, /fechad/, /contratad/, /pago/] },
+  { value: "pendente", patterns: [/pendente/, /em aberto/, /aberto/, /aguardando/, /an[aá]lise/, /solicitad/] },
+];
+
+export function suggestOperacionalStatusMapping(values: string[]): StatusMapping<ServicoStatus> {
+  return suggestValueMapping(values, OPERACIONAL_STATUS_KEYWORDS);
+}
+
+/** Quantidade e nº de dias são contagens inteiras — "5", "5 dias", "05". */
+function parseQuantidade(raw: string): number | null {
+  const n = parseInt(raw.replace(/[^\d-]/g, ""), 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Nº de dias quando a planilha não tem essa coluna mas tem as datas — a
+ * contagem é inclusiva (03/09 a 05/09 = 3 dias de operação, não 2).
+ */
+function diasEntre(inicio: string, fim: string): number | null {
+  const a = parseDateLoose(inicio);
+  const b = parseDateLoose(fim);
+  if (Number.isNaN(a) || Number.isNaN(b) || b < a) return null;
+  return Math.round((b - a) / 86_400_000) + 1;
+}
+
+export function mapRowsToPedidos(
+  table: SheetTable,
+  mapping: ColumnMapping<OperacionalFieldKey>,
+  statusMapping: StatusMapping<ServicoStatus>,
+  sourceFile: string,
+  servico?: string
+): PedidoServico[] {
+  const idx = (key: OperacionalFieldKey) => {
+    const col = mapping[key];
+    return col ? table.headers.indexOf(col) : -1;
+  };
+  const iExpositor = idx("expositor");
+  const iNomeFantasia = idx("nomeFantasia");
+  const iCnpj = idx("cnpj");
+  const iEstande = idx("estande");
+  const iLocalizacao = idx("localizacao");
+  const iQuantidade = idx("quantidade");
+  const iDias = idx("dias");
+  const iDataInicio = idx("dataInicio");
+  const iDataFim = idx("dataFim");
+  const iHoraInicio = idx("horaInicio");
+  const iHoraFim = idx("horaFim");
+  const iTurno = idx("turno");
+  const iStatus = idx("status");
+
+  // sem nome informado, cai pro derivado do arquivo — é sempre o arquivo que
+  // diz qual serviço é, nunca uma coluna da planilha.
+  const nomeServico = servico?.trim() || servicoFromFileName(sourceFile);
+
+  return table.rows.map((r) => {
+    const rawStatus = iStatus >= 0 ? r[iStatus] : "";
+    const dataInicio = iDataInicio >= 0 ? r[iDataInicio] : "";
+    const dataFim = iDataFim >= 0 ? r[iDataFim] : "";
+    // sem coluna de dias, tenta deduzir do intervalo de datas antes de desistir.
+    const dias =
+      (iDias >= 0 && r[iDias] ? parseQuantidade(r[iDias]) : null) ??
+      (dataInicio && dataFim ? diasEntre(dataInicio, dataFim) : null);
+    // planilha sem coluna de quantidade (ou com a célula vazia): a própria
+    // linha é o pedido, então vale 1 — zerar aqui apagaria o pedido dos KPIs.
+    const quantidade = (iQuantidade >= 0 ? parseQuantidade(r[iQuantidade]) : null) ?? 1;
+    return {
+      servico: nomeServico,
+      expositor: iExpositor >= 0 ? r[iExpositor] : "",
+      nomeFantasia: iNomeFantasia >= 0 ? r[iNomeFantasia] : "",
+      cnpj: iCnpj >= 0 ? r[iCnpj] : "",
+      estande: iEstande >= 0 ? r[iEstande] : "",
+      localizacao: iLocalizacao >= 0 ? r[iLocalizacao] : "",
+      quantidade,
+      dias,
+      dataInicio,
+      dataFim,
+      horaInicio: iHoraInicio >= 0 ? r[iHoraInicio] : "",
+      horaFim: iHoraFim >= 0 ? r[iHoraFim] : "",
+      turno: iTurno >= 0 ? r[iTurno] : "",
+      status: statusMapping[rawStatus] ?? "pendente",
+      sourceFile,
+    };
+  });
+}
+
+export function mergeImportedPedidos(
+  existing: PedidoServico[],
+  incoming: PedidoServico[],
+  sourceFile: string
+): PedidoServico[] {
+  return [...existing.filter((p) => p.sourceFile !== sourceFile), ...incoming];
+}
+
+export function aggregateOperacional(pedidos: PedidoServico[]): OperacionalData {
+  // pedido cancelado não vira operação — fica fora dos totais e dos gráficos
+  // de volume, mas continua na tabela e na contagem por status.
+  const ativos = pedidos.filter((p) => p.status !== "cancelado");
+  const totalItens = ativos.reduce((s, p) => s + p.quantidade, 0);
+  // sem coluna de dias a planilha não descreve diária nenhuma — conta 1 dia
+  // por item pra não zerar o KPI (e fica igual ao total de itens).
+  const totalDiarias = ativos.reduce((s, p) => s + p.quantidade * (p.dias ?? 1), 0);
+
+  const servicoTotals = new Map<string, number>();
+  for (const p of ativos) if (p.servico) servicoTotals.set(p.servico, (servicoTotals.get(p.servico) ?? 0) + p.quantidade);
+
+  const expositorTotals = new Map<string, number>();
+  for (const p of ativos) if (p.expositor) expositorTotals.set(p.expositor, (expositorTotals.get(p.expositor) ?? 0) + p.quantidade);
+
+  const statusTotals = new Map<ServicoStatus, number>();
+  for (const p of pedidos) statusTotals.set(p.status, (statusTotals.get(p.status) ?? 0) + 1);
+
+  const localTotals = new Map<string, number>();
+  for (const p of ativos) if (p.localizacao) localTotals.set(p.localizacao, (localTotals.get(p.localizacao) ?? 0) + p.quantidade);
+
+  return {
+    asOf: new Date().toISOString(),
+    kpis: {
+      totalItens,
+      totalDiarias,
+      qtdPedidos: pedidos.length,
+      qtdExpositores: new Set(ativos.map((p) => p.expositor).filter(Boolean)).size,
+    },
+    servicos: Array.from(servicoTotals, ([label, value]) => ({ label, value })),
+    topExpositores: Array.from(expositorTotals, ([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 10),
+    statusBreakdown: Array.from(statusTotals, ([label, value]) => ({ label, value })),
+    localizacoes: Array.from(localTotals, ([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value),
+    pedidos,
   };
 }

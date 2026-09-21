@@ -1,5 +1,6 @@
 /**
- * Camada de dados do template. Cada módulo (financeiro, credenciamento) tem
+ * Camada de dados do template. Cada módulo (financeiro, operacional,
+ * credenciamento) tem
  * um contrato de retorno próprio e uma função de fetch isolada — trocar de
  * evento/edição não muda nenhuma tela, apenas o `ModuleContext` repassado a
  * essas funções.
@@ -66,6 +67,80 @@ export async function fetchFinanceiro(
 ): Promise<FinanceiroData | null> {
   // const res = await fetch(`https://api.exemplo.com/eventos/${ctx.eventId}/edicoes/${ctx.editionId}/financeiro?...`);
   // if (!res.ok) throw new Error("Falha ao carregar dados financeiros");
+  // return res.json();
+  return null;
+}
+
+/* ---------------------------- Operacional --------------------------- */
+
+export type ServicoStatus = "pendente" | "confirmado" | "atendido" | "cancelado";
+
+/**
+ * Um pedido de serviço operacional feito por um expositor (uma linha da
+ * planilha de contratação: recepcionista, limpeza, segurança...). Cada
+ * serviço tem sua planilha e nem todas trazem as mesmas colunas: algumas têm
+ * data/hora de início e fim, outras só turno, muitas não têm quantidade. Só
+ * expositor e status são exigidos no import — o resto é preenchido quando
+ * existir, e a tela esconde as colunas que ficaram vazias.
+ */
+export type PedidoServico = {
+  /** Qual serviço a linha representa — vem do arquivo importado, não de uma coluna. */
+  servico: string;
+  /** Razão social do expositor. */
+  expositor: string;
+  nomeFantasia: string;
+  cnpj: string;
+  estande: string;
+  /** Pavilhão/setor onde fica o estande. */
+  localizacao: string;
+  /** Quantos itens do serviço (ex.: 2 recepcionistas). Sem coluna na planilha, cada linha conta como 1. */
+  quantidade: number;
+  /** Nº de dias contratados — informado na planilha ou calculado de dataInicio/dataFim. */
+  dias: number | null;
+  /** Texto cru da planilha ("03/09/2026" ou ISO) — os formatos variam demais pra converter no import. */
+  dataInicio: string;
+  dataFim: string;
+  /** Texto cru da planilha ("08:00", "8h"). */
+  horaInicio: string;
+  horaFim: string;
+  /** Manhã/tarde/integral — algumas planilhas usam isso no lugar de horário. */
+  turno: string;
+  status: ServicoStatus;
+  /** Preenchido apenas no modo planilha — identifica qual arquivo importado gerou esta linha. */
+  sourceFile?: string;
+};
+
+export type OperacionalFilters = {
+  /** Nome do serviço — texto livre vindo do arquivo, então "all" ou o valor exato. */
+  servico: "all" | string;
+  status: "all" | ServicoStatus;
+  search: string;
+};
+
+export type OperacionalData = {
+  asOf: string | null;
+  kpis: {
+    /** Soma das quantidades pedidas (ex.: 12 recepcionistas). */
+    totalItens: number | null;
+    /** Soma de quantidade × dias — o volume real de operação. */
+    totalDiarias: number | null;
+    qtdPedidos: number | null;
+    qtdExpositores: number | null;
+  };
+  servicos: Array<{ label: string; value: number }>;
+  topExpositores: Array<{ name: string; value: number }>;
+  statusBreakdown: Array<{ label: ServicoStatus; value: number }>;
+  /** Distribuição por pavilhão/setor — só existe quando a planilha traz a coluna. */
+  localizacoes: Array<{ name: string; value: number }>;
+  pedidos: PedidoServico[];
+};
+
+export async function fetchOperacional(
+  ctx: ModuleContext,
+  _filters: OperacionalFilters
+): Promise<OperacionalData | null> {
+  // const res = await fetch(`https://api.exemplo.com/eventos/${ctx.eventId}/edicoes/${ctx.editionId}/operacional?...`);
+  // if (!res.ok) throw new Error("Falha ao carregar dados operacionais");
   // return res.json();
   return null;
 }

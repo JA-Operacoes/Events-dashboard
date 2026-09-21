@@ -45,6 +45,17 @@ export function IconFinanceiro({ size = 15, className }: IconProps) {
   );
 }
 
+export function IconOperacional({ size = 15, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" className={className} {...base}>
+      <path d="M4 20.5V9.2l6-3.7 6 3.7V20.5" />
+      <path d="M2.5 20.5h19" />
+      <path d="M16 12.5h4.5v8" />
+      <path d="M7.5 20.5v-4h5v4" />
+    </svg>
+  );
+}
+
 export function IconCredenciamento({ size = 15, className }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" className={className} {...base}>

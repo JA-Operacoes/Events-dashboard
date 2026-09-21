@@ -85,6 +85,7 @@ model Edition {
 
   importedInvoices      ImportedInvoice[]
   importedParticipantes ImportedParticipante[]
+  importedServicos      ImportedServico[]
   access                UserEditionAccess[]
 
   @@unique([eventId, ano])
@@ -140,6 +141,43 @@ model ImportedParticipante {
   @@index([editionId])
   @@index([editionId, sourceFile])
   @@map("imported_participantes")
+}
+
+/// Pedido de serviço operacional feito por um expositor, vindo do "modo
+/// planilha" — mesmo esquema de persistência do ImportedInvoice: `sourceFile`
+/// identifica o arquivo de origem e reimportá-lo substitui só as linhas dele
+/// (ver rota /api/operacional/import).
+model ImportedServico {
+  id           String   @id @default(cuid())
+  editionId    String
+  sourceFile   String
+  /// Qual serviço a linha representa (Recepcionista, Limpeza...) — vem do
+  /// nome do arquivo importado, não de uma coluna da planilha.
+  servico      String
+  expositor    String
+  nomeFantasia String
+  cnpj         String
+  estande      String
+  localizacao  String
+  /// Sem coluna de quantidade na planilha, cada linha conta como 1 item.
+  quantidade   Int
+  /// Informado na planilha ou deduzido do intervalo dataInicio–dataFim.
+  dias         Int?
+  /// Datas e horas ficam como texto cru da planilha — os formatos variam
+  /// entre os serviços e converter no import só arriscaria perder linha.
+  dataInicio   String   @default("")
+  dataFim      String   @default("")
+  horaInicio   String   @default("")
+  horaFim      String   @default("")
+  turno        String   @default("")
+  status       String
+  createdAt    DateTime @default(now())
+
+  edition Edition @relation(fields: [editionId], references: [id], onDelete: Cascade)
+
+  @@index([editionId])
+  @@index([editionId, sourceFile])
+  @@map("imported_servicos")
 }
 
 /// Vínculo usuário → edição específica (não o evento inteiro) — dar acesso só

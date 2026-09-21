@@ -12,15 +12,28 @@ import {
   suggestCredenciamentoMapping,
   suggestCredenciamentoStatusMapping,
   mapRowsToParticipantes,
+  suggestOperacionalMapping,
+  suggestOperacionalStatusMapping,
+  mapRowsToPedidos,
+  servicoFromFileName,
   FINANCEIRO_FIELDS,
   CREDENCIAMENTO_FIELDS,
+  OPERACIONAL_FIELDS,
   type SheetTable,
   type ColumnMapping,
   type StatusMapping,
   type FinanceiroFieldKey,
   type CredenciamentoFieldKey,
+  type OperacionalFieldKey,
 } from "@/lib/spreadsheetImport";
-import type { Invoice, InvoiceStatus, Participante, CredenciamentoStatus } from "@/lib/dataSource";
+import type {
+  Invoice,
+  InvoiceStatus,
+  Participante,
+  CredenciamentoStatus,
+  PedidoServico,
+  ServicoStatus,
+} from "@/lib/dataSource";
 
 type FieldDef<K extends string> = { key: K; label: string; required: boolean };
 
@@ -34,6 +47,7 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
   suggestMappingFn,
   suggestStatusMappingFn,
   mapRowsFn,
+  extraField,
   onImported,
 }: {
   eventId: string | null;
@@ -44,7 +58,21 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
   statusOptions: { value: V; label: string }[];
   suggestMappingFn: (headers: string[]) => ColumnMapping<K>;
   suggestStatusMappingFn: (values: string[]) => StatusMapping<V>;
-  mapRowsFn: (table: SheetTable, mapping: ColumnMapping<K>, statusMapping: StatusMapping<V>, sourceFile: string) => T[];
+  mapRowsFn: (
+    table: SheetTable,
+    mapping: ColumnMapping<K>,
+    statusMapping: StatusMapping<V>,
+    sourceFile: string,
+    extra?: string
+  ) => T[];
+  /**
+   * Valor que não está em nenhuma coluna e sim no próprio arquivo — no
+   * Operacional é o nome do serviço ("Contratação Recepcionista.xls" →
+   * "Recepcionista"). Derivado por arquivo (inclusive no lote, onde cada
+   * planilha é um serviço diferente com o mesmo cabeçalho) e editável antes
+   * de confirmar.
+   */
+  extraField?: { label: string; hint?: string; derive: (fileName: string) => string };
   onImported: (rows: T[], fileName: string) => void;
 }) {
   // Todo módulo de importação tem um campo "status" que precisa de de-para de valores —
@@ -57,6 +85,7 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
   const [statusMapping, setStatusMapping] = useState<StatusMapping<V>>({});
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState("");
+  const [extraValue, setExtraValue] = useState("");
 
   // Upload em lote: quando mais de um arquivo é escolhido de uma vez, os que
   // têm exatamente o mesmo cabeçalho do primeiro (mesmo mapeamento) são
@@ -110,7 +139,9 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
 
       const last = lastMappingRef.current;
       if (last && sameHeaders(parsed.headers, last.headers)) {
-        const rows = mapRowsFn(parsed, last.mapping, last.statusMapping, file.name);
+        // o valor extra é sempre derivado DESTE arquivo, nunca herdado do
+        // anterior — em lote, cabeçalho igual não significa serviço igual.
+        const rows = mapRowsFn(parsed, last.mapping, last.statusMapping, file.name, extraField?.derive(file.name));
         onImported(rows, file.name);
         setImported((prev) => [...prev, { fileName: file.name, rows: rows.length }]);
         continue;
@@ -119,6 +150,7 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
       // cabeçalho diferente (ou é o primeiro arquivo) — pausa a fila e pede revisão manual.
       setTable(parsed);
       setFileName(file.name);
+      if (extraField) setExtraValue(extraField.derive(file.name));
       applyMappingFor(parsed);
       setProcessing(false);
       return;
@@ -142,7 +174,12 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
   const statusValues = table && mapping[STATUS_KEY] ? distinctValues(table, mapping[STATUS_KEY]!) : [];
   const missingRequired = fields.filter((f) => f.required && !mapping[f.key]);
   const missingStatusMap = statusValues.some((v) => !statusMapping[v]);
-  const canConfirm = table && missingRequired.length === 0 && statusValues.length > 0 && !missingStatusMap;
+  const canConfirm =
+    table &&
+    missingRequired.length === 0 &&
+    statusValues.length > 0 &&
+    !missingStatusMap &&
+    (!extraField || extraValue.trim() !== "");
 
   function reset() {
     setTable(null);
@@ -179,7 +216,7 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
 
   async function handleConfirm() {
     if (!table || !eventId || !canConfirm) return;
-    const rows = mapRowsFn(table, mapping, statusMapping, fileName);
+    const rows = mapRowsFn(table, mapping, statusMapping, fileName, extraValue.trim() || undefined);
     saveMapping(module, eventId, mapping, statusMapping);
     onImported(rows, fileName);
     setImported((prev) => [...prev, { fileName, rows: rows.length }]);
@@ -272,6 +309,22 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
             <strong>{fileName}</strong> · {table.rows.length} linhas · {table.headers.length} colunas
             {batchTotal > 1 && ` · arquivo ${imported.length + skipped.length + 1} de ${batchTotal}`}
           </div>
+
+          {extraField && (
+            <label className="import-field" style={{ marginTop: 12, maxWidth: 360 }}>
+              <span>
+                {extraField.label} <em>*</em>
+              </span>
+              <input
+                className="input"
+                type="text"
+                value={extraValue}
+                onChange={(e) => setExtraValue(e.target.value)}
+                placeholder={extraField.hint}
+              />
+              {extraField.hint && <span className="import-hint">{extraField.hint}</span>}
+            </label>
+          )}
 
           <div className="import-grid">
             {fields.map((f) => (
@@ -369,6 +422,41 @@ export function SpreadsheetImportFinanceiro({
       suggestMappingFn={suggestFinanceiroMapping}
       suggestStatusMappingFn={suggestFinanceiroStatusMapping}
       mapRowsFn={mapRowsToInvoices}
+      onImported={onImported}
+    />
+  );
+}
+
+const OPERACIONAL_STATUS_OPTIONS: { value: ServicoStatus; label: string }[] = [
+  { value: "pendente", label: "Pendente / em aberto" },
+  { value: "confirmado", label: "Confirmado" },
+  { value: "atendido", label: "Atendido" },
+  { value: "cancelado", label: "Cancelado" },
+];
+
+export function SpreadsheetImportOperacional({
+  eventId,
+  onImported,
+}: {
+  eventId: string | null;
+  onImported: (pedidos: PedidoServico[], fileName: string) => void;
+}) {
+  return (
+    <SpreadsheetImportPanel<OperacionalFieldKey, ServicoStatus, PedidoServico>
+      eventId={eventId}
+      module="operacional"
+      title="Importar planilha — Operacional"
+      description="Cada arquivo é um serviço (recepcionista, limpeza, segurança...). Selecione um ou vários de uma vez — os que tiverem o mesmo cabeçalho do primeiro são importados em lote automaticamente, cada um com o serviço tirado do nome do arquivo; reenviar um arquivo com o mesmo nome substitui só as linhas dele, arquivos diferentes se somam. O mapeamento abaixo já vem sugerido pelo nome das colunas — confira e ajuste só o que estiver errado."
+      fields={OPERACIONAL_FIELDS}
+      statusOptions={OPERACIONAL_STATUS_OPTIONS}
+      suggestMappingFn={suggestOperacionalMapping}
+      suggestStatusMappingFn={suggestOperacionalStatusMapping}
+      mapRowsFn={mapRowsToPedidos}
+      extraField={{
+        label: "Serviço desta planilha",
+        hint: "vem do nome do arquivo — corrija se ficou estranho",
+        derive: servicoFromFileName,
+      }}
       onImported={onImported}
     />
   );

@@ -7,7 +7,16 @@ import { useEvent } from "@/lib/eventContext";
 import { useI18n } from "@/lib/i18n";
 import { useAuth } from "@/lib/auth";
 import { useTheme } from "@/lib/theme";
-import { IconSun, IconMoon, IconOverview, IconFinanceiro, IconCredenciamento, IconCalendar, IconUsers } from "@/components/icons";
+import {
+  IconSun,
+  IconMoon,
+  IconOverview,
+  IconFinanceiro,
+  IconOperacional,
+  IconCredenciamento,
+  IconCalendar,
+  IconUsers,
+} from "@/components/icons";
 import CursorField from "@/components/CursorField";
 import Logo from "@/components/Logo";
 
@@ -131,6 +140,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   const NAV = [
     { href: "/", Icon: IconOverview, label: t("shell.nav.overview") },
     { href: "/financeiro", Icon: IconFinanceiro, label: t("shell.nav.financeiro") },
+    { href: "/operacional", Icon: IconOperacional, label: t("shell.nav.operacional") },
     { href: "/credenciamento", Icon: IconCredenciamento, label: t("shell.nav.credenciamento") },
   ];
 

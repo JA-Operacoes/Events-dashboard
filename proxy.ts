@@ -40,6 +40,7 @@ export const config = {
   matcher: [
     "/",
     "/financeiro/:path*",
+    "/operacional/:path*",
     "/credenciamento/:path*",
     "/admin/:path*",
     "/api/admin/:path*",
