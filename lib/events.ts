@@ -20,6 +20,10 @@ export type EventOption = {
   hideBranding?: boolean;
   /** Cor primária (hex) do cliente — substitui --accent/--accent-soft do tema enquanto ele está selecionado. */
   accentColor?: string | null;
+  /** Cor secundária (hex) — realces de apoio e 2ª série dos gráficos. */
+  secondaryColor?: string | null;
+  /** Cor do texto principal (hex) — substitui --ink enquanto o evento está selecionado. */
+  textColor?: string | null;
 };
 
 /**
@@ -29,8 +33,29 @@ export type EventOption = {
  * continua funcionando igual quando essa fonte mudar — nenhuma tela depende
  * de como os dados chegam aqui.
  */
+/**
+ * O banco (Neon) suspende por inatividade e a primeira chamada depois de um
+ * tempo parado pode falhar enquanto ele acorda. Como essa lista é o que
+ * sustenta a sidebar inteira, uma falha dessas deixava o painel vazio até
+ * alguém recarregar a página na mão — por isso a nova tentativa, com uma
+ * pausa curta para dar tempo do banco subir.
+ */
 export async function fetchEvents(): Promise<EventOption[]> {
-  const res = await fetch("/api/events");
-  if (!res.ok) throw new Error("Falha ao carregar eventos");
-  return res.json();
+  const tentativas = [0, 1500, 4000];
+  let ultimoErro: unknown = null;
+
+  for (const espera of tentativas) {
+    if (espera) await new Promise((r) => setTimeout(r, espera));
+    try {
+      const res = await fetch("/api/events");
+      if (res.ok) return res.json();
+      // 4xx é erro de permissão/sessão: repetir não muda nada
+      if (res.status < 500) throw new Error("Falha ao carregar eventos");
+      ultimoErro = new Error(`Falha ao carregar eventos (HTTP ${res.status})`);
+    } catch (err) {
+      if (err instanceof Error && err.message === "Falha ao carregar eventos") throw err;
+      ultimoErro = err;
+    }
+  }
+  throw ultimoErro instanceof Error ? ultimoErro : new Error("Falha ao carregar eventos");
 }

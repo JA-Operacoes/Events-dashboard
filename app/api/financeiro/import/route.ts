@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireEditionModule, isResponse } from "@/lib/serverAuth";
 import type { Invoice } from "@/lib/dataSource";
+import { classificarOrigem } from "@/lib/spreadsheetImport";
 
 export async function GET(req: NextRequest) {
   const editionId = req.nextUrl.searchParams.get("editionId");
@@ -20,6 +21,9 @@ export async function GET(req: NextRequest) {
     forma: r.forma,
     valor: r.valor,
     status: r.status as Invoice["status"],
+    quantidade: r.quantidade,
+    origem: r.origem,
+    origemTipo: classificarOrigem(r.origem),
     centroCusto: r.centroCusto,
     conta1: r.conta1,
     conta2: r.conta2,
@@ -62,6 +66,8 @@ export async function POST(req: NextRequest) {
         forma: inv.forma,
         valor: inv.valor,
         status: inv.status,
+        quantidade: inv.quantidade ?? null,
+        origem: inv.origem ?? "",
         centroCusto: inv.centroCusto ?? null,
         conta1: inv.conta1 ?? null,
         conta2: inv.conta2 ?? null,

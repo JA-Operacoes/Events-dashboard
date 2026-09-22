@@ -12,10 +12,10 @@ import { editionModules } from "@/lib/modules";
 
 const BANNER_ACCEPT = ["image/png", "image/jpeg", "image/webp"];
 const BANNER_MAX_MB = 5;
-// o banner estica full-width com object-fit:cover — sem um mínimo de
-// resolução, imagem pequena fica borrada/pixelizada esticada na tela toda.
-const BANNER_MIN_WIDTH = 1200;
-const BANNER_MIN_HEIGHT = 300;
+// medida única do banner — a mesma exigida no upload em /admin/eventos, para
+// o preview local daqui não aceitar uma imagem que o servidor recusaria.
+const BANNER_WIDTH = 1000;
+const BANNER_HEIGHT = 150;
 
 const ALL_MODULES = [
   { href: "/financeiro", Icon: IconFinanceiro, accent: "var(--accent)", key: "financeiro" },
@@ -62,10 +62,10 @@ function EventHero() {
       URL.revokeObjectURL(url);
       return;
     }
-    if (dims.width < BANNER_MIN_WIDTH || dims.height < BANNER_MIN_HEIGHT) {
+    if (dims.width !== BANNER_WIDTH || dims.height !== BANNER_HEIGHT) {
       notifyError(
-        "Imagem com resolução muito baixa",
-        `O banner precisa ter pelo menos ${BANNER_MIN_WIDTH}x${BANNER_MIN_HEIGHT}px (essa tem ${dims.width}x${dims.height}px) — abaixo disso ela fica borrada esticada na tela toda.`
+        "Tamanho do banner incorreto",
+        `O banner precisa ter exatamente ${BANNER_WIDTH}x${BANNER_HEIGHT}px (essa tem ${dims.width}x${dims.height}px).`
       );
       URL.revokeObjectURL(url);
       return;

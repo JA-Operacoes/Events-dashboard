@@ -4,10 +4,16 @@ import { useEffect, useMemo, useState } from "react";
 import { useEvent } from "@/lib/eventContext";
 import { useI18n } from "@/lib/i18n";
 import { useAuth } from "@/lib/auth";
-import { fetchFinanceiro, type FinanceiroData, type FinanceiroFilters, type Invoice } from "@/lib/dataSource";
+import {
+  fetchFinanceiro,
+  type FinanceiroData,
+  type FinanceiroFilters,
+  type Invoice,
+  type OrigemReceita,
+} from "@/lib/dataSource";
 import { ConnChip, Empty, EmptyTableRow, KpiRow, money, int } from "@/components/ui";
 import { SpreadsheetImportFinanceiro } from "@/components/SpreadsheetImport";
-import { aggregateFinanceiro, mergeImportedInvoices } from "@/lib/spreadsheetImport";
+import { aggregateFinanceiro, mergeImportedInvoices, classificarOrigem } from "@/lib/spreadsheetImport";
 import { Donut, BarList, StatusBars, LineChart } from "@/components/charts";
 import { getCached, setCached } from "@/lib/pageCache";
 import { matchesPeriod, normalizePaymentMethod, formatRelativeTime } from "@/lib/period";
@@ -18,6 +24,9 @@ export default function FinanceiroPage() {
   const { t } = useI18n();
   const { canManageData } = useAuth();
   const [period, setPeriod] = useState<FinanceiroFilters["period"]>("all");
+  // recorte por origem da receita: expositor, ingresso ou a visão geral com
+  // as duas somadas. Vem da coluna "Origem" da planilha.
+  const [origem, setOrigem] = useState<FinanceiroFilters["origem"]>("all");
   const [method, setMethod] = useState<FinanceiroFilters["method"]>("all");
   const [statusFilter, setStatusFilter] = useState<FinanceiroFilters["status"]>("all");
   const [donutVariant, setDonutVariant] = useState<"full" | "half">("full");
@@ -61,6 +70,7 @@ export default function FinanceiroPage() {
     const term = search.trim().toLowerCase();
     return rawInvoices.filter((inv) => {
       if (statusFilter !== "all" && inv.status !== statusFilter) return false;
+      if (origem !== "all" && (inv.origemTipo ?? classificarOrigem(inv.origem)) !== origem) return false;
       if (method !== "all" && normalizePaymentMethod(inv.forma) !== method) return false;
       if (
         contaFilter !== "all" &&
@@ -77,9 +87,38 @@ export default function FinanceiroPage() {
       }
       return true;
     });
-  }, [rawInvoices, statusFilter, method, contaFilter, period, search]);
+  }, [rawInvoices, statusFilter, origem, method, contaFilter, period, search]);
 
   const data = apiData || hasImported ? aggregateFinanceiro(filteredInvoices) : null;
+
+  // A barra de origem é calculada sobre TODAS as duplicatas, não sobre o
+  // resultado filtrado: senão, ao escolher "Expositor", as outras abas
+  // zerariam e não daria para comparar nem voltar com referência.
+  const origensDisponiveis = useMemo(() => {
+    const set = new Set<OrigemReceita>();
+    for (const inv of rawInvoices) {
+      const tipo = inv.origemTipo ?? classificarOrigem(inv.origem);
+      if (tipo) set.add(tipo);
+    }
+    return set;
+  }, [rawInvoices]);
+  const temOrigem = origensDisponiveis.size > 0;
+
+  const origemTotais = useMemo(() => {
+    const tot: Partial<Record<OrigemReceita, number>> = {};
+    for (const inv of rawInvoices) {
+      const tipo = inv.origemTipo ?? classificarOrigem(inv.origem);
+      if (!tipo) continue;
+      tot[tipo] = (tot[tipo] ?? 0) + inv.valor;
+    }
+    return tot;
+  }, [rawInvoices]);
+
+  // Todas as abas ficam visíveis; as que não têm receita aparecem
+  // desabilitadas. Esconder as vazias fazia a barra inteira sumir quando a
+  // planilha não trazia a coluna "Origem", e não havia como saber que o
+  // recorte existe nem por que ele não apareceu.
+  const ORIGEM_TABS = ["all", "expositor", "portaria", "ingresso"] as const;
 
   const visibleInvoices = useMemo(() => {
     const term = tableSearch.trim().toLowerCase();
@@ -191,7 +230,26 @@ export default function FinanceiroPage() {
     if (!res.ok) loadImported();
   }
 
-  const KPI_DEFS = [
+  // No recorte de ingresso, ticket médio e nº de duplicatas dizem pouco: o que
+  // interessa é quantos ingressos saíram e quanto cada comprador leva. A
+  // pontualidade continua valendo nos dois casos.
+  const KPI_DEFS_INGRESSO = [
+    { key: "totalRecebido", label: t("financeiro.kpi.total"), fmt: money },
+    { key: "qtdIngressos", label: t("financeiro.kpi.ingressos"), fmt: int },
+    {
+      key: "mediaPorComprador",
+      label: t("financeiro.kpi.mediaComprador"),
+      fmt: (v: number | null) => (v == null ? "—" : v.toLocaleString("pt-BR", { maximumFractionDigits: 1 })),
+    },
+    {
+      key: "pontualidadeDias",
+      label: t("financeiro.kpi.pontualidade"),
+      fmt: (v: number | null) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(1)} d`),
+    },
+  ] as const;
+
+
+  const KPI_DEFS_PADRAO = [
     { key: "totalRecebido", label: t("financeiro.kpi.total"), fmt: money },
     { key: "ticketMedio", label: t("financeiro.kpi.ticket"), fmt: money },
     { key: "qtdDuplicatas", label: t("financeiro.kpi.duplicatas"), fmt: int },
@@ -201,6 +259,15 @@ export default function FinanceiroPage() {
       fmt: (v: number | null) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(1)} d`),
     },
   ] as const;
+
+  const KPI_DEFS = origem === "ingresso" ? KPI_DEFS_INGRESSO : KPI_DEFS_PADRAO;
+
+  const ORIGEM_LABEL: Record<string, string> = {
+    all: t("financeiro.origem.all"),
+    expositor: t("financeiro.origem.expositor"),
+    portaria: t("financeiro.origem.portaria"),
+    ingresso: t("financeiro.origem.ingresso"),
+  };
 
   const STATUS_LABEL: Record<string, string> = {
     pago: t("status.pago"),
@@ -212,7 +279,7 @@ export default function FinanceiroPage() {
   async function load() {
     setConnState("pending");
     try {
-      const result = await fetchFinanceiro({ eventId, editionId }, { period, method, status: statusFilter, search });
+      const result = await fetchFinanceiro({ eventId, editionId }, { period, origem, method, status: statusFilter, search });
       setApiData(result);
       setConnState(result ? "connected" : "pending");
     } catch (err) {
@@ -229,7 +296,7 @@ export default function FinanceiroPage() {
     loadImported(); // revalida com o banco por baixo dos panos
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [eventId, editionId, period, method]);
+  }, [eventId, editionId, period, method, origem]);
 
   return (
     <>
@@ -282,6 +349,33 @@ export default function FinanceiroPage() {
         </div>
       )}
 
+      <div className="segbar" style={{ marginBottom: 10 }}>
+        <div className="seg">
+          {ORIGEM_TABS.map((v) => {
+            const vazia = v !== "all" && !origensDisponiveis.has(v);
+            return (
+              <button
+                key={v}
+                className={origem === v ? "on" : ""}
+                disabled={vazia}
+                title={vazia ? "nenhuma duplicata desta origem nos dados carregados" : undefined}
+                onClick={() => setOrigem(v)}
+              >
+                {ORIGEM_LABEL[v]}
+                {v !== "all" && origemTotais[v] != null && (
+                  <span style={{ opacity: 0.6, marginLeft: 6 }}>{money(origemTotais[v]!)}</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+        {!temOrigem && hasImported && (
+          <span style={{ fontSize: 11.5, color: "var(--ink-mute)", alignSelf: "center" }}>
+            as planilhas carregadas não têm a coluna &quot;Origem&quot; — reimporte para separar por origem
+          </span>
+        )}
+      </div>
+
       <div className="segbar">
         <div className="seg">
           {(["all", "30d", "7d", "custom"] as const).map((v) => (
@@ -324,7 +418,7 @@ export default function FinanceiroPage() {
                 {t("status.pago").toLowerCase()}
               </span>
               <span className="legend-item">
-                <span className="legend-swatch" style={{ background: "var(--amber)" }} />
+                <span className="legend-swatch" style={{ background: "var(--serie-2)" }} />
                 {t("status.pendente").toLowerCase()}
               </span>
             </div>
@@ -335,7 +429,7 @@ export default function FinanceiroPage() {
             <LineChart
               data={data.timeline}
               series={[
-                { key: "previsto", color: "var(--amber)", secondary: true },
+                { key: "previsto", color: "var(--serie-2)", secondary: true },
                 { key: "recebido", color: "var(--accent)" },
               ]}
             />
@@ -472,7 +566,7 @@ export default function FinanceiroPage() {
             />
           </div>
         </div>
-        <div className="table-scroll">
+        <div className="table-scroll scroll-slim">
           <table>
             <thead>
               <tr>

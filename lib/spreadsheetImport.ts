@@ -19,6 +19,7 @@ import type {
   FinanceiroData,
   Invoice,
   InvoiceStatus,
+  OrigemReceita,
   CredenciamentoData,
   Participante,
   CredenciamentoStatus,
@@ -98,6 +99,8 @@ export const FINANCEIRO_FIELDS = [
   { key: "cnpj", label: "CNPJ", required: false },
   { key: "vencimento", label: "Data de vencimento", required: false },
   { key: "pagamento", label: "Data de pagamento", required: false },
+  { key: "origem", label: "Origem (expositor/ingresso)", required: false },
+  { key: "quantidade", label: "Quantidade de ingressos", required: false },
   { key: "centroCusto", label: "Centro de custo", required: false },
   { key: "conta1", label: "Conta nível 1", required: false },
   { key: "conta2", label: "Conta nível 2", required: false },
@@ -201,6 +204,8 @@ const FINANCEIRO_FIELD_KEYWORDS: { key: FinanceiroFieldKey; patterns: RegExp[] }
   { key: "status", patterns: [/status/, /situa[cç][aã]o/] },
   { key: "valor", patterns: [/valor/, /montante/, /total/, /amount/] },
   { key: "cliente", patterns: [/empresa/, /cliente/, /raz[aã]o social/, /expositor/, /client/] },
+  { key: "origem", patterns: [/^origem$/, /origem/, /procedencia/, /tipo.*receita/] },
+  { key: "quantidade", patterns: [/quantidade/, /\bqtd\b/, /\bqtde\b/, /ingressos?/, /\bqty\b/] },
   { key: "centroCusto", patterns: [/centro.*custo/, /cost.*center/] },
   { key: "conta1", patterns: [/^conta$/, /^conta ?1$/, /^conta ?n[ií]vel ?1$/] },
   { key: "conta2", patterns: [/^conta ?2$/, /^conta ?n[ií]vel ?2$/] },
@@ -222,6 +227,40 @@ export function suggestFinanceiroStatusMapping(values: string[]): StatusMapping<
   return suggestValueMapping(values, FINANCEIRO_STATUS_KEYWORDS);
 }
 
+/**
+ * A coluna "Origem" vem em texto livre e varia por evento ("EXPOSITOR",
+ * "EXPOSITOR/MONTADOR", "INGRESSO", "INSCRIÇÃO", "FINANCEIRO"...). Classifica
+ * nas duas categorias que a tela separa; o que não for nenhuma das duas cai em
+ * "outras" em vez de ser forçado para um lado e distorcer o total.
+ */
+/**
+ * Sugere a origem da planilha no momento do import: se ela tem uma coluna
+ * "Origem" mapeável, deixa que a coluna decida linha a linha; senão tenta pelo
+ * nome do arquivo ("contas_a_receber_ingressos.xls"). Sem nenhum dos dois, volta
+ * vazio e o admin é obrigado a escolher — é isso que evita uma planilha inteira
+ * cair em "Outras" e sumir do recorte por origem.
+ */
+export function sugerirOrigemFinanceiro(fileName: string, table: SheetTable): string {
+  if (suggestFinanceiroMapping(table.headers).origem) return "auto";
+
+  const n = normalize(fileName);
+  if (/portaria|bilheteria|catraca/.test(n)) return "Portaria";
+  if (/ingresso|inscri|participante|visitante/.test(n)) return "Ingresso";
+  if (/expositor|montador|estande|patrocin/.test(n)) return "Expositor";
+  return "";
+}
+
+export function classificarOrigem(origem: string | null | undefined): OrigemReceita | null {
+  const o = normalize(origem ?? "");
+  if (!o) return null;
+  // portaria antes de ingresso: "venda de ingresso na portaria" é receita de
+  // portaria, e a regra de ingresso casaria com ela primeiro.
+  if (/portaria|porteir|bilheteria|catraca|acesso|entrada/.test(o)) return "portaria";
+  if (/ingresso|inscri|participante|visitante|credencial|congressista|ticket/.test(o)) return "ingresso";
+  if (/expositor|montador|estande|stand|patrocin/.test(o)) return "expositor";
+  return null;
+}
+
 export function distinctValues(table: SheetTable, column: string): string[] {
   const idx = table.headers.indexOf(column);
   if (idx === -1) return [];
@@ -238,7 +277,9 @@ export function mapRowsToInvoices(
   table: SheetTable,
   mapping: ColumnMapping<FinanceiroFieldKey>,
   statusMapping: StatusMapping<InvoiceStatus>,
-  sourceFile: string
+  sourceFile: string,
+  /** Origem escolhida no import: "auto" deixa a coluna da planilha decidir. */
+  origemEscolhida?: string
 ): Invoice[] {
   const idx = (key: FinanceiroFieldKey) => {
     const col = mapping[key];
@@ -252,7 +293,12 @@ export function mapRowsToInvoices(
   const iCnpj = idx("cnpj");
   const iVenc = idx("vencimento");
   const iPag = idx("pagamento");
+  const iOrigem = idx("origem");
+  const iQuantidade = idx("quantidade");
   const iCentroCusto = idx("centroCusto");
+
+  const escolha = (origemEscolhida ?? "").trim();
+  const forcarOrigem = !escolha || escolha === "auto" ? "" : escolha;
   const iConta1 = idx("conta1");
   const iConta2 = idx("conta2");
   const iConta3 = idx("conta3");
@@ -268,6 +314,11 @@ export function mapRowsToInvoices(
       forma: iForma >= 0 ? r[iForma] : "",
       valor: iValor >= 0 ? parseValor(r[iValor]) : 0,
       status: statusMapping[rawStatus] ?? "pendente",
+      // a escolha do import vale para o arquivo inteiro; "auto" devolve a
+      // decisão para a coluna, que pode variar linha a linha.
+      quantidade: iQuantidade >= 0 && r[iQuantidade] ? parseInt(r[iQuantidade].replace(/[^\d-]/g, ""), 10) || null : null,
+      origem: forcarOrigem || (iOrigem >= 0 ? r[iOrigem] : ""),
+      origemTipo: classificarOrigem(forcarOrigem || (iOrigem >= 0 ? r[iOrigem] : "")),
       centroCusto: iCentroCusto >= 0 && r[iCentroCusto] ? r[iCentroCusto] : null,
       conta1: iConta1 >= 0 && r[iConta1] ? r[iConta1] : null,
       conta2: iConta2 >= 0 && r[iConta2] ? r[iConta2] : null,
@@ -300,6 +351,15 @@ export function aggregateFinanceiro(invoices: Invoice[]): FinanceiroData {
 
   const statusTotals = new Map<InvoiceStatus, number>();
   for (const inv of invoices) statusTotals.set(inv.status, (statusTotals.get(inv.status) ?? 0) + 1);
+
+  // só faz sentido quando a planilha traz a coluna de origem — sem ela toda
+  // linha cairia em "outras" e o painel diria uma coisa que não é verdade.
+  const origemTotals = new Map<OrigemReceita, number>();
+  for (const inv of invoices) {
+    const tipo = inv.origemTipo ?? classificarOrigem(inv.origem);
+    if (!tipo) continue;
+    origemTotals.set(tipo, (origemTotals.get(tipo) ?? 0) + inv.valor);
+  }
 
   // opcional — só populado quando a planilha traz colunas de rateio (Conta/Conta 2/Conta 3).
   // uma duplicata pode aparecer em mais de uma conta ao mesmo tempo (rateio entre centros de
@@ -338,6 +398,13 @@ export function aggregateFinanceiro(invoices: Invoice[]): FinanceiroData {
     previsto: previstoPorDia.get(date) ?? 0,
   }));
 
+  // Leitura de ingresso: quantos ingressos foram comprados e quantos o mesmo
+  // comprador leva em média. Duplicata sem coluna de quantidade conta como 1 —
+  // é uma compra. O comprador é o CNPJ/CPF; sem documento, cai para o nome.
+  const naoCanceladas = invoices.filter((i) => i.status !== "cancelado");
+  const qtdIngressos = naoCanceladas.reduce((s, i) => s + (i.quantidade ?? 1), 0);
+  const compradores = new Set(naoCanceladas.map((i) => i.cnpj?.trim() || i.cliente?.trim()).filter(Boolean));
+
   return {
     asOf: new Date().toISOString(),
     kpis: {
@@ -345,6 +412,8 @@ export function aggregateFinanceiro(invoices: Invoice[]): FinanceiroData {
       ticketMedio,
       qtdDuplicatas: invoices.length,
       pontualidadeDias: pontualidadeQtd ? pontualidadeSoma / pontualidadeQtd : null,
+      qtdIngressos: naoCanceladas.length ? qtdIngressos : null,
+      mediaPorComprador: compradores.size ? qtdIngressos / compradores.size : null,
     },
     timeline,
     paymentMethods: Array.from(methodTotals, ([label, value]) => ({ label, value })),
@@ -353,6 +422,7 @@ export function aggregateFinanceiro(invoices: Invoice[]): FinanceiroData {
       .slice(0, 10),
     statusBreakdown: Array.from(statusTotals, ([label, value]) => ({ label, value })),
     contas: Array.from(contaTotals, ([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value),
+    origens: Array.from(origemTotals, ([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value),
     invoices,
   };
 }
@@ -514,7 +584,9 @@ export const OPERACIONAL_FIELDS = [
   { key: "cnpj", label: "CNPJ / CPF", required: false },
   { key: "estande", label: "Nº do estande", required: false },
   { key: "localizacao", label: "Localização (pavilhão/setor)", required: false },
+  { key: "tipoEstande", label: "Tipo de estande / montagem", required: false },
   { key: "dias", label: "Nº de dias", required: false },
+  { key: "valor", label: "Valor (unitário ou total)", required: false },
   { key: "dataInicio", label: "Data inicial", required: false },
   { key: "dataFim", label: "Data final", required: false },
   { key: "horaInicio", label: "Hora inicial", required: false },
@@ -537,6 +609,9 @@ const OPERACIONAL_FIELD_KEYWORDS: { key: OperacionalFieldKey; patterns: RegExp[]
   // "Loc. / Estande" primeiro: é uma coluna só com os dois valores, e o
   // padrão de estande a roubaria antes de localizacao ter chance.
   { key: "localizacao", patterns: [LOC_ESTANDE_HEADER, /localiza/, /pavilh/, /setor/, /\brua\b/, /^loc\b/, /local/] },
+  // tipo antes de estande: "Tipo de Estande" seria capturado pelo padrão de
+  // estande (que procura o número do estande) se viesse depois.
+  { key: "tipoEstande", patterns: [/tipo.*(estande|montagem|stand)/, /^montagem$/, /categoria.*estande/] },
   { key: "estande", patterns: [/estande/, /stand/, /\bbox\b/, /booth/] },
   { key: "dias", patterns: [/dias/, /di[aá]ria/, /days/] },
   // hora antes de data: "Hora Final" não pode ser capturada pelo padrão de
@@ -547,6 +622,7 @@ const OPERACIONAL_FIELD_KEYWORDS: { key: OperacionalFieldKey; patterns: RegExp[]
   { key: "dataFim", patterns: [/data .*(fim|final|t[eé]rmino|sa[ií]da)/, /(fim|final|t[eé]rmino).*data/, /^(fim|final|t[eé]rmino)$/] },
   { key: "turno", patterns: [/turno/, /per[ií]odo/] },
   { key: "quantidade", patterns: [/quantidade/, /\bqtd\b/, /\bqtde\b/, /\bqty\b/] },
+  { key: "valor", patterns: [/valor/, /pre[cç]o/, /^total$/, /amount/] },
   { key: "status", patterns: [/status/, /situa[cç][aã]o/] },
 ];
 
@@ -656,9 +732,12 @@ export function suggestOperacionalMapping(headers: string[]): ColumnMapping<Oper
 }
 
 const OPERACIONAL_STATUS_KEYWORDS: { value: ServicoStatus; patterns: RegExp[] }[] = [
-  { value: "cancelado", patterns: [/cancelad/, /desistiu/, /recusad/, /estornad/] },
-  { value: "atendido", patterns: [/atendid/, /entregue/, /conclu[ií]d/, /finalizad/, /executad/, /done/] },
-  { value: "confirmado", patterns: [/confirmad/, /aprovad/, /fechad/, /contratad/, /pago/] },
+  // "sem débito/sem crédito" antes de tudo: a frase contém "debito"/"credito",
+  // que apareceriam em outras regras, e ela é a mais específica das cinco.
+  { value: "semDebito", patterns: [/sem ?d[eé]bito/, /sem ?cr[eé]dito/, /sem ?cobran/, /n[aã]o ?gera ?cobran/] },
+  { value: "isento", patterns: [/isent/, /cortesia/, /gratuit/, /dispensad/] },
+  { value: "cancelado", patterns: [/cancelad/, /recusad/, /negad/, /reprovad/, /estornad/, /desistiu/] },
+  { value: "pago", patterns: [/pago/, /quitad/, /liquidad/, /paid/, /confirmad/, /aprovad/] },
   { value: "pendente", patterns: [/pendente/, /em aberto/, /aberto/, /aguardando/, /an[aá]lise/, /solicitad/] },
 ];
 
@@ -717,6 +796,7 @@ export function mapRowsToPedidos(
   const iCnpj = idx("cnpj");
   const iEstande = idx("estande");
   const iLocalizacao = idx("localizacao");
+  const iTipoEstande = idx("tipoEstande");
   const iQuantidade = idx("quantidade");
   const iDias = idx("dias");
   const iDataInicio = idx("dataInicio");
@@ -724,7 +804,12 @@ export function mapRowsToPedidos(
   const iHoraInicio = idx("horaInicio");
   const iHoraFim = idx("horaFim");
   const iTurno = idx("turno");
+  const iValor = idx("valor");
   const iStatus = idx("status");
+
+  // "Valor Unitário" precisa ser multiplicado pela quantidade; "Valor Total"
+  // já vem fechado. O cabeçalho é quem diz qual dos dois é.
+  const valorEhUnitario = /unit/.test(normalize(mapping.valor ?? ""));
 
   // sem nome informado, cai pro derivado do arquivo — é sempre o arquivo que
   // diz qual serviço é, nunca uma coluna da planilha.
@@ -761,6 +846,7 @@ export function mapRowsToPedidos(
       cnpj: iCnpj >= 0 ? r[iCnpj] : "",
       estande: estandeDaLinha(r),
       localizacao: localizacaoDaLinha(r),
+      tipoEstande: iTipoEstande >= 0 ? r[iTipoEstande] : "",
       quantidade,
       dias,
       dataInicio,
@@ -768,6 +854,12 @@ export function mapRowsToPedidos(
       horaInicio: iHoraInicio >= 0 ? r[iHoraInicio] : "",
       horaFim: iHoraFim >= 0 ? r[iHoraFim] : "",
       turno: iTurno >= 0 ? r[iTurno] : "",
+      valor:
+        iValor >= 0 && r[iValor]
+          ? valorEhUnitario
+            ? parseValor(r[iValor]) * quantidade
+            : parseValor(r[iValor])
+          : null,
       status: statusMapping[rawStatus] ?? "pendente",
       sourceFile,
     };
@@ -782,20 +874,33 @@ export function mergeImportedPedidos(
   return [...existing.filter((p) => p.sourceFile !== sourceFile), ...incoming];
 }
 
+/**
+ * O mesmo tipo de estande chega escrito de várias formas conforme quem
+ * preencheu e de qual relatório veio — "exhibit_hall", "exhibit hall",
+ * "EXHIBIT HALL" e "Exhibit Hall" são o mesmo estande, e apareciam como quatro
+ * barras diferentes no painel. Agrupa pelas palavras: caixa, acento e
+ * separador (_ - .) deixam de contar, e o rótulo sai numa forma única.
+ *
+ * O que NÃO é agrupado: variações com palavras a mais
+ * ("exhibit_hall_-_isencao_taxa_de_montagem") continuam separadas — ali o
+ * texto extra diz algo sobre a contratação e somar apagaria essa distinção.
+ */
+export function tipoEstandeAgrupado(valor: string | null | undefined): string {
+  const bruto = (valor ?? "").trim();
+  if (!bruto) return "";
+
+  return bruto
+    .split(/[\s_\-.]+/)
+    .filter(Boolean)
+    .map((w) => (w.length <= 3 && w === w.toUpperCase() ? w : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()))
+    .join(" ");
+}
+
 export function aggregateOperacional(pedidos: PedidoServico[]): OperacionalData {
   // pedido cancelado não vira operação — fica fora dos totais e dos gráficos
   // de volume, mas continua na tabela e na contagem por status.
   const ativos = pedidos.filter((p) => p.status !== "cancelado");
   const totalItens = ativos.reduce((s, p) => s + p.quantidade, 0);
-  // Diária é pessoa-dia: 2 recepcionistas por 5 dias = 10. Só entram as linhas
-  // que informam dias (na planilha ou pelo intervalo de datas) — contar 1 dia
-  // para quem não informa misturaria pessoa-dia com pessoa e o total deixaria
-  // de significar qualquer coisa. Sem nenhuma linha com dias o KPI fica nulo,
-  // e a tela mostra que não há dado em vez de um número inventado.
-  const comDias = ativos.filter((p) => p.dias != null);
-  const totalDiarias = comDias.length
-    ? comDias.reduce((s, p) => s + p.quantidade * (p.dias as number), 0)
-    : null;
 
   const servicoTotals = new Map<string, number>();
   for (const p of ativos) if (p.servico) servicoTotals.set(p.servico, (servicoTotals.get(p.servico) ?? 0) + p.quantidade);
@@ -806,26 +911,35 @@ export function aggregateOperacional(pedidos: PedidoServico[]): OperacionalData 
   const statusTotals = new Map<ServicoStatus, number>();
   for (const p of pedidos) statusTotals.set(p.status, (statusTotals.get(p.status) ?? 0) + 1);
 
-  const localTotals = new Map<string, number>();
-  for (const p of ativos) if (p.localizacao) localTotals.set(p.localizacao, (localTotals.get(p.localizacao) ?? 0) + p.quantidade);
+  // quantos itens cada tipo de estande contratou — é a leitura que o
+  // operacional usa para dimensionar equipe e material por perfil de estande.
+  const tipoTotals = new Map<string, number>();
+  for (const p of ativos) {
+    const tipo = tipoEstandeAgrupado(p.tipoEstande);
+    if (tipo) tipoTotals.set(tipo, (tipoTotals.get(tipo) ?? 0) + p.quantidade);
+  }
+
+  // Isenção: itens que não geram cobrança (isento + sem débito) sobre o total
+  // ativo. É a leitura de quanto do serviço saiu de graça para o expositor.
+  const itensIsentos = ativos
+    .filter((p) => p.status === "isento" || p.status === "semDebito")
+    .reduce((s, p) => s + p.quantidade, 0);
 
   return {
     asOf: new Date().toISOString(),
     kpis: {
       totalItens,
-      totalDiarias,
-      qtdPedidos: pedidos.length,
+      taxaIsencao: totalItens ? (itensIsentos / totalItens) * 100 : null,
       qtdExpositores: new Set(ativos.map((p) => p.expositor).filter(Boolean)).size,
     },
-    // quantos itens ficaram de fora do cálculo de diárias, para a tela poder
-    // avisar que o número cobre só parte dos pedidos
-    itensSemDias: totalItens - comDias.reduce((s, p) => s + p.quantidade, 0),
     servicos: Array.from(servicoTotals, ([label, value]) => ({ label, value })),
-    topExpositores: Array.from(expositorTotals, ([name, value]) => ({ name, value }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 10),
+    // ranking completo: a tela mostra os 10 primeiros e abre o resto sob
+    // demanda. Cortar aqui impediria ver o expositor de número 11.
+    topExpositores: Array.from(expositorTotals, ([name, value]) => ({ name, value })).sort(
+      (a, b) => b.value - a.value
+    ),
     statusBreakdown: Array.from(statusTotals, ([label, value]) => ({ label, value })),
-    localizacoes: Array.from(localTotals, ([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value),
+    tiposEstande: Array.from(tipoTotals, ([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value),
     pedidos,
   };
 }

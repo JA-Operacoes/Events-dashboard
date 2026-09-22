@@ -4,12 +4,15 @@ import { prisma } from "@/lib/prisma";
 import { requireAdmin, isResponse } from "@/lib/serverAuth";
 import { getImageDimensions } from "@/lib/imageDimensions";
 
-const REQUIRED_WIDTH = 600;
+// O banner é uma faixa larga e baixa no topo da visão geral — fora dessa
+// proporção ele aparece esticado ou cortado, então a medida é exigida em vez
+// de sugerida (mesma regra da logo do evento).
+const REQUIRED_WIDTH = 1000;
 const REQUIRED_HEIGHT = 150;
-const MAX_BYTES = 2 * 1024 * 1024; // 2MB — de sobra pra um PNG/WEBP 600x150
+const MAX_BYTES = 2 * 1024 * 1024;
 
-// Mapeia magic bytes -> mime real. Nunca confiamos no `file.type` do upload
-// (é só o que o navegador reportou, um cabeçalho pode ser forjado).
+// Magic bytes -> mime real. O `file.type` do upload é só o que o navegador
+// reportou e pode ser forjado.
 function sniffMime(buf: Buffer): "image/png" | "image/jpeg" | "image/webp" | null {
   if (buf.length >= 8 && buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])))
     return "image/png";
@@ -24,8 +27,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (isResponse(auth)) return auth;
 
   const { id } = await params;
-  const event = await prisma.event.findUnique({ where: { id } });
-  if (!event) return NextResponse.json({ error: "Evento não encontrado" }, { status: 404 });
+  const edition = await prisma.edition.findUnique({ where: { id } });
+  if (!edition) return NextResponse.json({ error: "Edição não encontrada" }, { status: 404 });
 
   const form = await req.formData();
   const file = form.get("file");
@@ -39,27 +42,28 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const dims = getImageDimensions(buf);
   if (!dims || dims.width !== REQUIRED_WIDTH || dims.height !== REQUIRED_HEIGHT) {
     return NextResponse.json(
-      { error: `A imagem precisa ter exatamente ${REQUIRED_WIDTH}x${REQUIRED_HEIGHT}px (recebido: ${dims ? `${dims.width}x${dims.height}` : "desconhecido"})` },
+      {
+        error: `A imagem precisa ter exatamente ${REQUIRED_WIDTH}x${REQUIRED_HEIGHT}px (recebido: ${
+          dims ? `${dims.width}x${dims.height}` : "desconhecido"
+        })`,
+      },
       { status: 400 }
     );
   }
 
   const ext = mime === "image/png" ? "png" : mime === "image/jpeg" ? "jpg" : "webp";
-  const blob = await put(`event-logos/${id}-${Date.now()}.${ext}`, buf, {
-    access: "public",
-    contentType: mime,
-  });
+  const blob = await put(`edition-banners/${id}-${Date.now()}.${ext}`, buf, { access: "public", contentType: mime });
 
-  const previousLogoUrl = event.logoUrl;
-  await prisma.event.update({ where: { id }, data: { logoUrl: blob.url } });
+  const anterior = edition.bannerUrl;
+  await prisma.edition.update({ where: { id }, data: { bannerUrl: blob.url } });
 
-  // apaga o arquivo antigo do blob store pra não acumular lixo — só se era
-  // realmente um blob nosso (evento pode ter tido logoUrl setado via URL manual antes)
-  if (previousLogoUrl && previousLogoUrl.includes(".public.blob.vercel-storage.com/")) {
-    del(previousLogoUrl).catch(() => {});
+  // remove o arquivo antigo do blob store para não acumular lixo — só se era
+  // mesmo um blob nosso.
+  if (anterior && anterior.includes(".public.blob.vercel-storage.com/")) {
+    del(anterior).catch(() => {});
   }
 
-  return NextResponse.json({ logoUrl: blob.url });
+  return NextResponse.json({ bannerUrl: blob.url });
 }
 
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -67,12 +71,12 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   if (isResponse(auth)) return auth;
 
   const { id } = await params;
-  const event = await prisma.event.findUnique({ where: { id } });
-  if (!event) return NextResponse.json({ error: "Evento não encontrado" }, { status: 404 });
+  const edition = await prisma.edition.findUnique({ where: { id } });
+  if (!edition) return NextResponse.json({ error: "Edição não encontrada" }, { status: 404 });
 
-  if (event.logoUrl && event.logoUrl.includes(".public.blob.vercel-storage.com/")) {
-    del(event.logoUrl).catch(() => {});
+  if (edition.bannerUrl && edition.bannerUrl.includes(".public.blob.vercel-storage.com/")) {
+    del(edition.bannerUrl).catch(() => {});
   }
-  await prisma.event.update({ where: { id }, data: { logoUrl: null } });
+  await prisma.edition.update({ where: { id }, data: { bannerUrl: null } });
   return NextResponse.json({ ok: true });
 }

@@ -19,6 +19,15 @@ export type ModuleContext = {
 
 export type InvoiceStatus = "pago" | "pendente" | "atrasado" | "cancelado";
 
+/**
+ * De onde vem a receita, para o recorte da tela. A origem vem da coluna
+ * "Origem" da planilha ou da escolha feita no import. Duplicata que não se
+ * encaixa em nenhuma das três (o ERP manda "FINANCEIRO" em algumas linhas)
+ * fica sem classificação e aparece só na visão geral — melhor não aparecer num
+ * recorte do que aparecer no recorte errado.
+ */
+export type OrigemReceita = "expositor" | "portaria" | "ingresso";
+
 export type Invoice = {
   numero: string;
   cliente: string;
@@ -28,6 +37,15 @@ export type Invoice = {
   forma: string;
   valor: number;
   status: InvoiceStatus;
+  /**
+   * Quantos ingressos a duplicata representa. Só existe nas planilhas de
+   * ingresso que trazem a coluna; sem ela, a duplicata conta como 1.
+   */
+  quantidade?: number | null;
+  /** Texto cru da coluna "Origem" da planilha — preservado para a tabela. */
+  origem?: string;
+  /** Classificação da origem usada pelo filtro; nula quando não se encaixa em nenhuma. */
+  origemTipo?: OrigemReceita | null;
   /** Rateio de contas/centro de custo — opcionais, algumas planilhas de ERP trazem até 4 por duplicata. */
   centroCusto?: string | null;
   conta1?: string | null;
@@ -39,6 +57,8 @@ export type Invoice = {
 
 export type FinanceiroFilters = {
   period: "all" | "30d" | "7d" | "custom";
+  /** "all" é a visão geral — expositor e ingresso somados, como era antes. */
+  origem: "all" | OrigemReceita;
   method: "all" | "boleto" | "cartao" | "pix";
   status: "all" | InvoiceStatus;
   search: string;
@@ -51,6 +71,10 @@ export type FinanceiroData = {
     ticketMedio: number | null;
     qtdDuplicatas: number | null;
     pontualidadeDias: number | null;
+    /** Ingressos comprados — soma das quantidades (duplicata sem quantidade conta 1). */
+    qtdIngressos: number | null;
+    /** Média de ingressos por comprador (CNPJ/CPF distinto). */
+    mediaPorComprador: number | null;
   };
   timeline: Array<{ date: string; recebido: number; previsto: number }>;
   paymentMethods: Array<{ label: string; value: number }>;
@@ -58,6 +82,8 @@ export type FinanceiroData = {
   statusBreakdown: Array<{ label: InvoiceStatus; value: number }>;
   /** Rateio por conta/centro de custo — só existe quando a planilha importada traz alguma coluna "Conta". */
   contas: Array<{ name: string; value: number }>;
+  /** Quanto cada origem representa — vazio quando a planilha não traz a coluna. */
+  origens: Array<{ label: OrigemReceita; value: number }>;
   invoices: Invoice[];
 };
 
@@ -73,7 +99,13 @@ export async function fetchFinanceiro(
 
 /* ---------------------------- Operacional --------------------------- */
 
-export type ServicoStatus = "pendente" | "confirmado" | "atendido" | "cancelado";
+/**
+ * Status de PAGAMENTO do pedido de serviço — é o que as planilhas de
+ * contratação trazem. "isento" é o expositor dispensado da cobrança;
+ * "semDebito" é a linha que não gera cobrança nenhuma (cortesia do contrato,
+ * serviço incluso), diferente de uma cobrança ainda em aberto.
+ */
+export type ServicoStatus = "pago" | "pendente" | "cancelado" | "isento" | "semDebito";
 
 /**
  * Um pedido de serviço operacional feito por um expositor (uma linha da
@@ -93,6 +125,12 @@ export type PedidoServico = {
   estande: string;
   /** Pavilhão/setor onde fica o estande. */
   localizacao: string;
+  /**
+   * Tipo/montagem do estande ("PROMOTOR BÁSICO", "static display", "challet
+   * vilage"...). Vem da coluna "Montagem" / "Tipo de Montagem" / "Tipo de
+   * Estande" da planilha, que nem todo serviço traz.
+   */
+  tipoEstande: string;
   /** Quantos itens do serviço (ex.: 2 recepcionistas). Sem coluna na planilha, cada linha conta como 1. */
   quantidade: number;
   /** Nº de dias contratados — informado na planilha ou calculado de dataInicio/dataFim. */
@@ -106,6 +144,12 @@ export type PedidoServico = {
   /** Manhã/tarde/integral — algumas planilhas usam isso no lugar de horário. */
   turno: string;
   status: ServicoStatus;
+  /**
+   * Valor total da linha, quando a planilha traz preço. Já multiplicado pela
+   * quantidade nos casos em que a coluna é unitária ("Valor Unitário") — aqui
+   * é sempre o total daquele pedido. Nulo quando a planilha não tem valor.
+   */
+  valor: number | null;
   /** Preenchido apenas no modo planilha — identifica qual arquivo importado gerou esta linha. */
   sourceFile?: string;
 };
@@ -123,21 +167,19 @@ export type OperacionalData = {
     /** Soma das quantidades pedidas (ex.: 12 recepcionistas). */
     totalItens: number | null;
     /**
-     * Pessoa-dia: soma de quantidade × dias, contando só os pedidos que
-     * informam dias. Nulo quando nenhum informa — nesse caso a planilha não
-     * descreve duração e não há diária a calcular.
+     * Percentual de itens que não geram cobrança (isentos e sem débito) sobre
+     * o total ativo. Nulo quando não há nenhum item ativo para comparar.
      */
-    totalDiarias: number | null;
-    qtdPedidos: number | null;
+    taxaIsencao: number | null;
+    /** Quantos expositores diferentes têm pedido nesta edição. */
     qtdExpositores: number | null;
   };
-  /** Itens fora do cálculo de diárias (pedidos sem dias informados). */
-  itensSemDias: number;
   servicos: Array<{ label: string; value: number }>;
+  /** Ranking completo de expositores por quantidade — a tela recorta o topo. */
   topExpositores: Array<{ name: string; value: number }>;
   statusBreakdown: Array<{ label: ServicoStatus; value: number }>;
-  /** Distribuição por pavilhão/setor — só existe quando a planilha traz a coluna. */
-  localizacoes: Array<{ name: string; value: number }>;
+  /** Itens contratados por tipo de estande — só existe quando a planilha traz a coluna. */
+  tiposEstande: Array<{ name: string; value: number }>;
   pedidos: PedidoServico[];
 };
 

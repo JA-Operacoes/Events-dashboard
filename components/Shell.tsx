@@ -20,6 +20,7 @@ import {
 import CursorField from "@/components/CursorField";
 import Logo from "@/components/Logo";
 import { MODULES, editionModules, moduleForPath, type ModuleKey } from "@/lib/modules";
+import { corEfetiva } from "@/lib/contrast";
 import type { Key } from "@/lib/i18n";
 
 const MODULE_ICON: Record<ModuleKey, typeof IconFinanceiro> = {
@@ -153,18 +154,39 @@ export default function Shell({ children }: { children: React.ReactNode }) {
     setNavOpen(false);
   }, [pathname]);
 
+  // Marca do evento: primária, secundária e cor de texto, aplicadas como
+  // variáveis do tema — somem sozinhas ao trocar de evento e voltam ao padrão
+  // quando o evento não define a cor.
+  //
+  // Cada cor passa por corEfetiva() antes de entrar: a escolha do admin é uma
+  // só, mas cada pessoa lê no tema que prefere. Um texto preto escolhido
+  // pensando no tema claro é clareado até ficar legível no escuro (e o
+  // inverso), preservando o matiz — a marca continua reconhecível.
   useEffect(() => {
     const root = document.documentElement;
-    const color = event?.accentColor;
-    if (color) {
-      const soft = hexToRgba(color, theme === "dark" ? 0.14 : 0.22);
-      root.style.setProperty("--accent", color);
+
+    const accent = corEfetiva(event?.accentColor, theme, "grafico");
+    if (accent) {
+      const soft = hexToRgba(accent, theme === "dark" ? 0.14 : 0.22);
+      root.style.setProperty("--accent", accent);
       if (soft) root.style.setProperty("--accent-soft", soft);
     } else {
       root.style.removeProperty("--accent");
       root.style.removeProperty("--accent-soft");
     }
-  }, [event?.accentColor, theme]);
+
+    // a secundária é a cor da série "prevista/pendente" dos gráficos — o par
+    // da primária, que desenha o realizado. Fica só na --serie-2 de propósito:
+    // pintar --amber inteiro levaria a cor do cliente para badges de status e
+    // avisos do sistema, onde ela não significa nada.
+    const secundaria = corEfetiva(event?.secondaryColor, theme, "grafico");
+    if (secundaria) root.style.setProperty("--serie-2", secundaria);
+    else root.style.removeProperty("--serie-2");
+
+    const texto = corEfetiva(event?.textColor, theme, "texto");
+    if (texto) root.style.setProperty("--ink", texto);
+    else root.style.removeProperty("--ink");
+  }, [event?.accentColor, event?.secondaryColor, event?.textColor, theme]);
 
   // só os módulos contratados nesta edição entram na navegação
   const enabled = editionModules(edition);

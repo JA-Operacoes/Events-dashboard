@@ -62,6 +62,12 @@ model Event {
   /// substitui a cor de destaque padrão do tema enquanto esse evento está
   /// selecionado. Nulo = usa a cor padrão do template.
   accentColor     String?
+  /// Cor secundária — usada nos realces de apoio (2ª série dos gráficos,
+  /// destaques que não competem com a primária). Nulo = cor padrão do tema.
+  secondaryColor  String?
+  /// Cor do texto principal. Nulo = a do tema. Mexer nela afeta a leitura da
+  /// tela inteira, por isso o admin vê o contraste calculado antes de salvar.
+  textColor       String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
@@ -113,6 +119,12 @@ model ImportedInvoice {
   forma      String
   valor      Float
   status     String
+  /// Texto cru da coluna "Origem" da planilha ("EXPOSITOR", "FINANCEIRO"...),
+  /// usado para separar receita de expositor e de ingresso na tela.
+  origem     String   @default("")
+  /// Quantos ingressos a duplicata representa (planilhas de ingresso). Nulo
+  /// quando a planilha não tem a coluna — nesse caso vale 1 na contagem.
+  quantidade Int?
   /// Rateio de contas/centro de custo — opcionais, algumas planilhas de ERP trazem até 4 por duplicata.
   centroCusto String?
   conta1     String?
@@ -164,6 +176,9 @@ model ImportedServico {
   cnpj         String
   estande      String
   localizacao  String
+  /// Tipo/montagem do estande ("PROMOTOR BÁSICO", "static display"...), da
+  /// coluna "Montagem"/"Tipo de Estande" da planilha.
+  tipoEstande  String   @default("")
   /// Sem coluna de quantidade na planilha, cada linha conta como 1 item.
   quantidade   Int
   /// Informado na planilha ou deduzido do intervalo dataInicio–dataFim.
@@ -175,6 +190,9 @@ model ImportedServico {
   horaInicio   String   @default("")
   horaFim      String   @default("")
   turno        String   @default("")
+  /// Valor total da linha quando a planilha traz preço (já multiplicado pela
+  /// quantidade se a coluna for unitária). Nulo quando não há valor na origem.
+  valor        Float?
   status       String
   createdAt    DateTime @default(now())
 

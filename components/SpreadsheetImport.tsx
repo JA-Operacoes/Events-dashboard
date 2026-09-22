@@ -9,6 +9,7 @@ import {
   suggestFinanceiroMapping,
   suggestFinanceiroStatusMapping,
   mapRowsToInvoices,
+  sugerirOrigemFinanceiro,
   suggestCredenciamentoMapping,
   suggestCredenciamentoStatusMapping,
   mapRowsToParticipantes,
@@ -72,7 +73,14 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
    * planilha é um serviço diferente com o mesmo cabeçalho) e editável antes
    * de confirmar.
    */
-  extraField?: { label: string; hint?: string; derive: (fileName: string) => string };
+  extraField?: {
+    label: string;
+    hint?: string;
+    /** Sugere o valor a partir do arquivo e do conteúdo já lido da planilha. */
+    derive: (fileName: string, table: SheetTable) => string;
+    /** Quando presente, o campo vira uma escolha fechada em vez de texto livre. */
+    options?: Array<{ value: string; label: string }>;
+  };
   onImported: (rows: T[], fileName: string) => void;
 }) {
   // Todo módulo de importação tem um campo "status" que precisa de de-para de valores —
@@ -141,7 +149,7 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
       if (last && sameHeaders(parsed.headers, last.headers)) {
         // o valor extra é sempre derivado DESTE arquivo, nunca herdado do
         // anterior — em lote, cabeçalho igual não significa serviço igual.
-        const rows = mapRowsFn(parsed, last.mapping, last.statusMapping, file.name, extraField?.derive(file.name));
+        const rows = mapRowsFn(parsed, last.mapping, last.statusMapping, file.name, extraField?.derive(file.name, parsed));
         onImported(rows, file.name);
         setImported((prev) => [...prev, { fileName: file.name, rows: rows.length }]);
         continue;
@@ -150,7 +158,7 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
       // cabeçalho diferente (ou é o primeiro arquivo) — pausa a fila e pede revisão manual.
       setTable(parsed);
       setFileName(file.name);
-      if (extraField) setExtraValue(extraField.derive(file.name));
+      if (extraField) setExtraValue(extraField.derive(file.name, parsed));
       applyMappingFor(parsed);
       setProcessing(false);
       return;
@@ -315,13 +323,24 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
               <span>
                 {extraField.label} <em>*</em>
               </span>
-              <input
-                className="input"
-                type="text"
-                value={extraValue}
-                onChange={(e) => setExtraValue(e.target.value)}
-                placeholder={extraField.hint}
-              />
+              {extraField.options ? (
+                <select className="input" value={extraValue} onChange={(e) => setExtraValue(e.target.value)}>
+                  <option value="">— escolher —</option>
+                  {extraField.options.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  className="input"
+                  type="text"
+                  value={extraValue}
+                  onChange={(e) => setExtraValue(e.target.value)}
+                  placeholder={extraField.hint}
+                />
+              )}
               {extraField.hint && <span className="import-hint">{extraField.hint}</span>}
             </label>
           )}
@@ -422,16 +441,28 @@ export function SpreadsheetImportFinanceiro({
       suggestMappingFn={suggestFinanceiroMapping}
       suggestStatusMappingFn={suggestFinanceiroStatusMapping}
       mapRowsFn={mapRowsToInvoices}
+      extraField={{
+        label: "Origem desta planilha",
+        hint: "define de onde vem a receita — sem isso a planilha aparece só na visão geral",
+        options: [
+          { value: "auto", label: "Usar a coluna Origem da planilha" },
+          { value: "Expositor", label: "Expositor" },
+          { value: "Portaria", label: "Portarias" },
+          { value: "Ingresso", label: "Ingresso" },
+        ],
+        derive: sugerirOrigemFinanceiro,
+      }}
       onImported={onImported}
     />
   );
 }
 
 const OPERACIONAL_STATUS_OPTIONS: { value: ServicoStatus; label: string }[] = [
+  { value: "pago", label: "Pago" },
   { value: "pendente", label: "Pendente / em aberto" },
-  { value: "confirmado", label: "Confirmado" },
-  { value: "atendido", label: "Atendido" },
-  { value: "cancelado", label: "Cancelado" },
+  { value: "cancelado", label: "Recusado / cancelado" },
+  { value: "isento", label: "Isentado / isento" },
+  { value: "semDebito", label: "Sem débito / sem crédito" },
 ];
 
 export function SpreadsheetImportOperacional({

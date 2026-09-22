@@ -12,6 +12,7 @@ export async function GET(req: NextRequest) {
     orderBy: [{ grupo: "asc" }, { nome: "asc" }],
     include: {
       editions: { orderBy: { ano: "desc" }, include: { _count: { select: { access: true } } } },
+      // bannerUrl já vem por padrão no modelo; o include acima só acrescenta a contagem
     },
   });
   return NextResponse.json(events);

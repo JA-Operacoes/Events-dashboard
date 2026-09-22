@@ -294,7 +294,7 @@ export default function CredenciamentoPage() {
             <p>{t("credenciamento.table.desc")}</p>
           </div>
         </div>
-        <div className="table-scroll">
+        <div className="table-scroll scroll-slim">
           <table>
             <thead>
               <tr>

@@ -1,13 +1,21 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth";
 import { useEvent } from "@/lib/eventContext";
 import { Checkbox } from "@/components/ui";
 import { notifySuccess, notifyError, confirmDanger } from "@/lib/swal";
 import { MODULES, editionModules, type ModuleKey } from "@/lib/modules";
+import { corEfetiva, contraste, FUNDO_PAINEL, ALVO_CONTRASTE } from "@/lib/contrast";
 
-type Edition = { id: string; ano: number; label: string; modulos: string[]; _count: { access: number } };
+type Edition = {
+  id: string;
+  ano: number;
+  label: string;
+  modulos: string[];
+  bannerUrl: string | null;
+  _count: { access: number };
+};
 type EventRow = {
   id: string;
   nome: string;
@@ -16,6 +24,8 @@ type EventRow = {
   logoUrl: string | null;
   hideBranding: boolean;
   accentColor: string | null;
+  secondaryColor: string | null;
+  textColor: string | null;
 };
 
 const SEM_GRUPO = "— sem grupo —";
@@ -103,9 +113,13 @@ export default function AdminEventosPage() {
   const [novoNome, setNovoNome] = useState("");
   const [novoGrupo, setNovoGrupo] = useState("");
   const [editionForms, setEditionForms] = useState<Record<string, { ano: string; label: string }>>({});
-  const [brandForms, setBrandForms] = useState<Record<string, { logoUrl: string; hideBranding: boolean; accentColor: string }>>({});
+  const [brandForms, setBrandForms] = useState<
+    Record<string, { logoUrl: string; hideBranding: boolean; accentColor: string; secondaryColor: string; textColor: string }>
+  >({});
   const [uploadingLogo, setUploadingLogo] = useState<string | null>(null);
   const [logoError, setLogoError] = useState<Record<string, string>>({});
+  const [uploadingBanner, setUploadingBanner] = useState<string | null>(null);
+  const [bannerError, setBannerError] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -140,8 +154,10 @@ export default function AdminEventosPage() {
     return a.localeCompare(b, "pt-BR");
   });
 
-  const LOGO_WIDTH = 650;
-  const LOGO_HEIGHT = 200;
+  const LOGO_WIDTH = 600;
+  const LOGO_HEIGHT = 150;
+  const BANNER_WIDTH = 1000;
+  const BANNER_HEIGHT = 150;
   const LOGO_ACCEPT = ["image/png", "image/jpeg", "image/webp"];
 
   async function handleLogoFile(eventId: string, file: File) {
@@ -202,7 +218,7 @@ export default function AdminEventosPage() {
       const next = { ...prev };
       for (const ev of data) {
         if (!next[ev.id])
-          next[ev.id] = { logoUrl: ev.logoUrl ?? "", hideBranding: ev.hideBranding, accentColor: ev.accentColor ?? "" };
+          next[ev.id] = { logoUrl: ev.logoUrl ?? "", hideBranding: ev.hideBranding, accentColor: ev.accentColor ?? "", secondaryColor: ev.secondaryColor ?? "", textColor: ev.textColor ?? "" };
       }
       return next;
     });
@@ -291,6 +307,48 @@ export default function AdminEventosPage() {
     refreshEvents();
   }
 
+  async function handleBannerFile(editionId: string, file: File) {
+    setBannerError((prev) => ({ ...prev, [editionId]: "" }));
+    setUploadingBanner(editionId);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch(`/api/admin/editions/${editionId}/banner`, { method: "POST", body: form });
+      const body = await res.json();
+      if (!res.ok) {
+        setBannerError((prev) => ({ ...prev, [editionId]: body.error ?? "Falha ao enviar o banner" }));
+        notifyError("Não foi possível enviar o banner", body.error ?? "Tente outro arquivo.");
+        return;
+      }
+      setEvents((prev) =>
+        prev.map((ev) => ({
+          ...ev,
+          editions: ev.editions.map((ed) => (ed.id === editionId ? { ...ed, bannerUrl: body.bannerUrl } : ed)),
+        }))
+      );
+      refreshEvents();
+      notifySuccess("Banner atualizado");
+    } finally {
+      setUploadingBanner(null);
+    }
+  }
+
+  async function handleRemoveBanner(editionId: string) {
+    const res = await fetch(`/api/admin/editions/${editionId}/banner`, { method: "DELETE" });
+    if (!res.ok) {
+      notifyError("Não foi possível remover o banner", "Tente de novo.");
+      return;
+    }
+    setEvents((prev) =>
+      prev.map((ev) => ({
+        ...ev,
+        editions: ev.editions.map((ed) => (ed.id === editionId ? { ...ed, bannerUrl: null } : ed)),
+      }))
+    );
+    refreshEvents();
+    notifySuccess("Banner removido");
+  }
+
   async function handleDeleteEdition(id: string) {
     const ok = await confirmDanger("Remover esta edição?", "Os dados financeiros/credenciamento importados pra ela também somem — não dá pra desfazer.");
     if (!ok) return;
@@ -314,18 +372,45 @@ export default function AdminEventosPage() {
     refreshEvents(); // atualiza a sidebar na hora, sem precisar recarregar a página
   }
 
-  // Cor também é efeito imediato — igual ao toggle de marca — pra dar feedback
-  // visual instantâneo enquanto o admin escolhe a cor no picker.
-  async function handleAccentColorChange(eventId: string, accentColor: string) {
-    setBrandForms((prev) => ({ ...prev, [eventId]: { ...prev[eventId], accentColor } }));
-    await fetch(`/api/admin/events/${eventId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ accentColor: accentColor || null }),
-    });
-    load();
-    refreshEvents();
+  /**
+   * A cor muda na tela na hora, mas só é gravada quando o admin para de mexer.
+   * Um <input type="color"> dispara onChange a cada pixel arrastado no seletor:
+   * salvar a cada disparo fazia dezenas de PATCH + recarregamento da lista por
+   * segundo, e era isso que fazia a tela "piscar" a cada ação. Agora o estado
+   * local responde imediatamente e a gravação espera 400ms de silêncio.
+   */
+  const corTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  type CampoCor = "accentColor" | "secondaryColor" | "textColor";
+
+  function handleColorChange(eventId: string, campo: CampoCor, valor: string) {
+    setBrandForms((prev) => ({ ...prev, [eventId]: { ...prev[eventId], [campo]: valor } }));
+    setEvents((prev) => prev.map((ev) => (ev.id === eventId ? { ...ev, [campo]: valor || null } : ev)));
+
+    const chave = `${eventId}:${campo}`;
+    clearTimeout(corTimers.current[chave]);
+    corTimers.current[chave] = setTimeout(async () => {
+      const res = await fetch(`/api/admin/events/${eventId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [campo]: valor || null }),
+      });
+      if (!res.ok) {
+        notifyError("Não foi possível salvar a cor", "Tente de novo.");
+        load();
+        return;
+      }
+      // só a sidebar precisa saber da cor nova — load() reconstruiria a lista
+      // inteira de eventos e é o que causava o recarregamento visível.
+      refreshEvents();
+    }, 400);
   }
+
+  // timers pendentes não podem disparar depois que a tela sai do ar
+  useEffect(() => {
+    const timers = corTimers.current;
+    return () => Object.values(timers).forEach(clearTimeout);
+  }, []);
 
   // Grupo é reassinalável a qualquer momento (efeito imediato, igual cor/marca) —
   // permite tanto encaixar um evento existente num grupo quanto criar um novo grupo na hora.
@@ -428,7 +513,7 @@ export default function AdminEventosPage() {
               </p>
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                 {evs.map((ev) => {
-                  const brand = brandForms[ev.id] ?? { logoUrl: "", hideBranding: false, accentColor: "" };
+                  const brand = brandForms[ev.id] ?? { logoUrl: "", hideBranding: false, accentColor: "", secondaryColor: "", textColor: "" };
                   const isOpen = !!expanded[ev.id];
                   return (
                     <div className="panel" key={ev.id}>
@@ -529,7 +614,8 @@ export default function AdminEventosPage() {
                     esconder, ou coloque a logo do próprio evento no lugar.
                   </p>
                   <p style={{ fontSize: 11, color: "var(--ink-mute)", margin: "0 0 8px" }}>
-                    Exige imagem exatamente {LOGO_WIDTH}x{LOGO_HEIGHT}px, em PNG, JPEG ou WEBP.
+                    Logo: exatamente {LOGO_WIDTH}x{LOGO_HEIGHT}px · Banner: exatamente {BANNER_WIDTH}x{BANNER_HEIGHT}px
+                    — PNG, JPEG ou WEBP.
                   </p>
                   <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
                     {brand.logoUrl && (
@@ -571,22 +657,128 @@ export default function AdminEventosPage() {
                     label="Ocultar completamente a marca do Portal JA para este evento"
                   />
 
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14 }}>
-                    <input
-                      type="color"
-                      value={brand.accentColor || "#e53939"}
-                      onChange={(e) => handleAccentColorChange(ev.id, e.target.value)}
-                      style={{ width: 40, height: 32, padding: 2, border: "1px solid var(--line)", borderRadius: 6, background: "none", cursor: "pointer" }}
-                      aria-label="Cor primária do evento"
-                    />
-                    <span style={{ fontSize: 12.5, color: "var(--ink-dim)" }}>
-                      Cor primária deste evento (substitui a cor padrão do template)
+                  <div className="brand-colors">
+                    {(
+                      [
+                        { campo: "accentColor" as const, label: "Cor primária", padrao: "#e53939", desc: "destaques, botões e 1ª série dos gráficos" },
+                        { campo: "secondaryColor" as const, label: "Cor secundária", padrao: "#eed04b", desc: "série do previsto/pendente nos gráficos" },
+                        { campo: "textColor" as const, label: "Cor da fonte", padrao: "#f2f2f0", desc: "texto principal de todas as telas" },
+                      ]
+                    ).map(({ campo, label, padrao, desc }) => {
+                      const valor = brand[campo] || "";
+                      const papel = campo === "textColor" ? ("texto" as const) : ("grafico" as const);
+                      // como a cor sai em cada tema: se precisou de ajuste para
+                      // ficar legível, o admin vê exatamente o tom que o cliente
+                      // vai enxergar, em vez de descobrir na tela do cliente.
+                      const efetiva = {
+                        dark: corEfetiva(valor, "dark", papel),
+                        light: corEfetiva(valor, "light", papel),
+                      };
+                      const ajustada =
+                        !!valor &&
+                        ((efetiva.dark && efetiva.dark.toLowerCase() !== valor.toLowerCase()) ||
+                          (efetiva.light && efetiva.light.toLowerCase() !== valor.toLowerCase()));
+                      return (
+                        <div className="brand-color-row" key={campo}>
+                          <input
+                            type="color"
+                            value={valor || padrao}
+                            onChange={(e) => handleColorChange(ev.id, campo, e.target.value)}
+                            aria-label={label}
+                          />
+                          <input
+                            className="input"
+                            type="text"
+                            value={valor}
+                            placeholder={padrao}
+                            onChange={(e) => {
+                              const v = e.target.value.trim();
+                              // só grava com hex completo; salvar "#e5" gravaria cor inválida
+                              if (!v || /^#[0-9a-fA-F]{6}$/.test(v)) handleColorChange(ev.id, campo, v);
+                              else setBrandForms((prev) => ({ ...prev, [ev.id]: { ...prev[ev.id], [campo]: v } }));
+                            }}
+                            style={{ width: 110, fontFamily: "var(--mono)" }}
+                            aria-label={`Código da ${label.toLowerCase()}`}
+                          />
+                          <span className="brand-color-label">
+                            <strong>{label}</strong>
+                            <span>{desc}</span>
+                          </span>
+                          {valor && efetiva.dark && efetiva.light && (
+                            <span className="brand-theme-preview">
+                              {(["dark", "light"] as const).map((tema) => (
+                                <span
+                                  key={tema}
+                                  className="brand-theme-chip"
+                                  style={{ background: FUNDO_PAINEL[tema], color: efetiva[tema]! }}
+                                  title={`No tema ${tema === "dark" ? "escuro" : "claro"}: ${efetiva[tema]} · ${(
+                                    contraste(efetiva[tema]!, FUNDO_PAINEL[tema]) ?? 0
+                                  ).toFixed(1)}:1 (mínimo ${ALVO_CONTRASTE[papel]}:1)`}
+                                >
+                                  Aa
+                                </span>
+                              ))}
+                              {ajustada && <em>ajustada por tema</em>}
+                            </span>
+                          )}
+                          {valor && (
+                            <button className="btn" type="button" onClick={() => handleColorChange(ev.id, campo, "")}>
+                              Padrão
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* O banner fica aqui, junto do seletor: a cor do evento é
+                      escolhida olhando para ele, então ver os dois lado a lado
+                      evita acertar a cor numa tela e conferir em outra. */}
+                  <div className="brand-banners">
+                    <span className="section-label" style={{ margin: "14px 0 6px" }}>
+                      Banner por edição ({BANNER_WIDTH}x{BANNER_HEIGHT}px)
                     </span>
-                    {brand.accentColor && (
-                      <button className="btn" type="button" onClick={() => handleAccentColorChange(ev.id, "")}>
-                        Usar cor padrão
-                      </button>
+                    {!ev.editions.length && (
+                      <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>crie uma edição para enviar o banner</span>
                     )}
+                    {ev.editions.map((ed) => (
+                      <div className="brand-banner-row" key={ed.id}>
+                        <div className="brand-banner-preview" style={{ borderColor: brand.accentColor || "var(--line)" }}>
+                          {ed.bannerUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={ed.bannerUrl} alt={`Banner da edição ${ed.label}`} />
+                          ) : (
+                            <span>sem banner</span>
+                          )}
+                          <span className="brand-banner-accent" style={{ background: brand.accentColor || "var(--accent)" }} />
+                        </div>
+                        <div className="brand-banner-actions">
+                          <strong style={{ fontSize: 12.5 }}>{ed.label}</strong>
+                          <label className="btn" style={{ cursor: "pointer" }}>
+                            {uploadingBanner === ed.id ? "Enviando…" : ed.bannerUrl ? "Trocar banner" : "Enviar banner"}
+                            <input
+                              type="file"
+                              accept="image/png,image/jpeg,image/webp"
+                              disabled={uploadingBanner === ed.id}
+                              style={{ display: "none" }}
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                e.target.value = "";
+                                if (file) handleBannerFile(ed.id, file);
+                              }}
+                            />
+                          </label>
+                          {ed.bannerUrl && (
+                            <button className="btn" type="button" onClick={() => handleRemoveBanner(ed.id)}>
+                              Remover
+                            </button>
+                          )}
+                          {bannerError[ed.id] && (
+                            <span style={{ fontSize: 11.5, color: "var(--red)" }}>{bannerError[ed.id]}</span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
                   </>

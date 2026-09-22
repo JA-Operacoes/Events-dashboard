@@ -26,6 +26,8 @@ export async function GET(req: NextRequest) {
       logoUrl: ev.logoUrl,
       hideBranding: ev.hideBranding,
       accentColor: ev.accentColor,
+      secondaryColor: ev.secondaryColor,
+      textColor: ev.textColor,
       editions: ev.editions
         .filter((ed) => isAllowedEdition(ed.id))
         .map((ed) => ({
