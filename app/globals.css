@@ -142,7 +142,41 @@ body {
   padding: 22px 14px; display: flex; flex-direction: column; gap: 26px;
   position: sticky; top: 0; height: 100vh; overflow-y: auto;
   background: linear-gradient(180deg, var(--bg-2), var(--bg));
+  transition: width .18s ease, padding .18s ease;
 }
+
+/* Recolhida: faixa de ícones. Devolve ~170px para os painéis, que é o que
+   faz diferença numa tabela de 10 colunas. */
+.rail-recolhida { width: 52px; padding: 22px 6px; gap: 18px; overflow-x: hidden; }
+.rail-recolhida .rail-label,
+.rail-recolhida .rail-brand strong,
+.rail-recolhida .rail-brand span,
+.rail-recolhida .event-switcher,
+.rail-recolhida .section-label,
+.rail-recolhida .pref-label,
+.rail-recolhida .session-email,
+.rail-recolhida .admin-badge { display: none; }
+.rail-recolhida .rail-link { justify-content: center; padding: 9px 0; }
+.rail-recolhida .rail-link.active::before { left: -6px; }
+.rail-recolhida .rail-brand { justify-content: center; padding: 0; }
+.rail-recolhida .rail-foot { padding: 0; align-items: center; gap: 10px; }
+.rail-recolhida .pref-row { justify-content: center; }
+.rail-recolhida .session-row { flex-direction: column; gap: 6px; }
+.rail-recolhida .session-row .btn { padding: 6px 8px; font-size: 11px; }
+
+/* Puxador do menu. Fica no fluxo, alinhado à direita: a sidebar tem
+   overflow-y, então um botão em position:absolute estourando a borda seria
+   recortado. */
+.rail-toggle {
+  align-self: flex-end; margin-bottom: -18px;
+  width: 24px; height: 24px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink-dim);
+  font-size: 13px; line-height: 1; cursor: pointer; padding: 0; flex-shrink: 0;
+  transition: color .15s, border-color .15s;
+}
+.rail-toggle:hover { color: var(--ink); border-color: var(--accent); }
+.rail-recolhida .rail-toggle { align-self: center; }
 
 .mobile-nav-toggle { display: none; }
 
@@ -164,6 +198,18 @@ body {
     transform: translateX(-100%); transition: transform 0.2s ease; box-shadow: 0 0 0 transparent;
   }
   .rail.rail-open { transform: translateX(0); box-shadow: 8px 0 24px rgba(0, 0, 0, 0.35); }
+  /* no drawer do mobile não faz sentido recolher: ele já abre e fecha inteiro */
+  .rail-recolhida { width: 260px; padding: 22px 14px; }
+  .rail-recolhida .rail-label,
+  .rail-recolhida .rail-brand strong,
+  .rail-recolhida .rail-brand span,
+  .rail-recolhida .event-switcher,
+  .rail-recolhida .section-label,
+  .rail-recolhida .pref-label,
+  .rail-recolhida .session-email,
+  .rail-recolhida .admin-badge { display: revert; }
+  .rail-recolhida .rail-link { justify-content: flex-start; padding: 9px 10px; }
+  .rail-toggle { display: none; }
   .main { padding-top: 66px; }
 }
 .rail-brand { display: flex; align-items: center; gap: 10px; padding: 0 8px; width: 100%; }
@@ -381,7 +427,7 @@ body {
 }
 .input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
 
-.kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 14px; }
+.kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 12px; align-items: stretch; }
 @media (max-width: 1000px) { .kpi-row { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 480px) { .kpi-row { grid-template-columns: 1fr; } }
 
@@ -400,9 +446,14 @@ body {
 }
 .tilt:hover { background: linear-gradient(120deg, var(--accent), var(--line) 40%); }
 .tilt-inner {
-  position: relative; border-radius: 12px; background: var(--panel); padding: 16px 17px;
+  position: relative; border-radius: 12px; background: var(--panel); padding: 11px 13px;
   overflow: hidden; height: 100%;
+  display: flex; flex-direction: column;
 }
+/* rótulos de duas linhas num card e de uma em outro desalinhavam os números:
+   o valor puxa a sobra e o rodapé fica preso na base em todos. */
+.tilt-inner .kpi-value { margin-top: auto; }
+.tilt-inner .kpi-foot { margin-top: 6px; }
 .tilt-inner::before {
   content: ""; position: absolute; inset: 0; opacity: 0; transition: opacity .3s;
   background: radial-gradient(180px circle at var(--mx) var(--my), var(--accent-soft), transparent 70%);
@@ -411,32 +462,90 @@ body {
 .tilt:hover .tilt-inner::before { opacity: 1; }
 .tilt-inner.auth-card { padding: 30px 28px; border-radius: 16px; }
 
-.kpi-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-.kpi-label { font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-mute); }
-.kpi-value { font-family: var(--mono); font-size: 25px; font-weight: 600; letter-spacing: -0.01em; position: relative; z-index: 1; }
-.kpi-value.pending { color: var(--ink-mute); font-size: 15px; font-weight: 500; font-family: var(--sans); }
+.kpi-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px; }
+.kpi-label { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-mute); line-height: 1.25; }
+.kpi-value { font-family: var(--mono); font-size: 20px; font-weight: 600; letter-spacing: -0.01em; position: relative; z-index: 1; line-height: 1.2; }
+.kpi-value.pending { color: var(--ink-mute); font-size: 13px; font-weight: 500; font-family: var(--sans); }
 .kpi-input {
   width: 100%; font-family: var(--mono); font-size: 20px; font-weight: 600; color: var(--amber);
   background: var(--panel-2); border: 1px solid var(--amber); border-radius: 7px; padding: 5px 8px;
   position: relative; z-index: 1;
 }
 .kpi-input:focus { outline: none; border-color: var(--amber); box-shadow: 0 0 0 2px color-mix(in srgb, var(--amber) 25%, transparent); }
-.kpi-foot { margin-top: 8px; font-size: 11.5px; color: var(--ink-mute); display: flex; align-items: center; gap: 5px; }
+.kpi-foot { margin-top: 4px; font-size: 10.5px; color: var(--ink-mute); display: flex; align-items: center; gap: 5px; }
 
 .donut-wrap { display: flex; align-items: center; justify-content: center; gap: 24px; flex-wrap: wrap; padding: 8px 0; }
 .donut-svg { width: 100%; max-width: 200px; height: auto; flex-shrink: 0; }
 .donut-svg-half { max-width: 240px; }
 .donut-legend { display: flex; flex-direction: column; gap: 10px; min-width: 160px; flex: 1; max-width: 260px; }
 
-.panels { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
-.panels-3 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
-@media (max-width: 1000px) { .panels, .panels-3 { grid-template-columns: 1fr; } }
+/* Painéis são condicionais: o relatório não trouxe aquela coluna, o filtro
+   zerou, o módulo não usa aquele recorte. Com duas colunas fixas, um número
+   ímpar de painéis (ou um único sobrevivente) deixava metade da linha em
+   branco no meio do dashboard. */
+.panels,
+.panels-3 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; align-items: stretch; }
+/* o painel que ficaria sozinho na última linha ocupa a linha inteira — vale
+   também quando sobrou um só, que é o caso de tirar uma planilha do evento */
+.panels > .panel:last-child:nth-child(odd),
+.panels-3 > .panel:last-child:nth-child(odd) { grid-column: 1 / -1; }
+/* mesmo caso quando o vizinho seguinte é um painel de linha inteira (o status,
+   por exemplo): quem abre a linha ficaria sozinho, então também estica */
+.panels > .panel:nth-child(odd):has(+ .panel-largo),
+.panels-3 > .panel:nth-child(odd):has(+ .panel-largo) { grid-column: 1 / -1; }
+@media (max-width: 860px) { .panels, .panels-3 { grid-template-columns: 1fr; } }
 
+/* Coluna flex + height 100%: como os painéis dividem a linha da grade, o mais
+   alto definia a altura e os outros ficavam com um vão morto embaixo. Agora o
+   card ocupa a linha inteira e o conteúdo se espalha dentro dele, se ajustando
+   ao tamanho da tela em vez de depender de altura fixa. */
 .panel {
   border: 1px solid var(--line); border-radius: 13px; background: var(--panel);
-  padding: 18px 18px 16px; position: relative;
+  padding: 14px 15px 12px; position: relative;
+  display: flex; flex-direction: column; height: 100%;
 }
-.panel-head { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 16px; gap: 10px; }
+/* o corpo do painel (gráfico, lista, tabela) puxa a sobra de altura;
+   min-height: 0 para o scroll interno funcionar dentro do flex */
+.panel > .donut-wrap,
+.panel > .barlist,
+.panel > .barlist-scroll,
+.panel > .statusbars-row,
+.panel > .fluxo-matriz,
+.panel > .empty,
+.panel > .chart-wrap,
+.panel > .statusbars-list,
+.panel > .panel-body { flex: 1 1 auto; min-height: 0; }
+/* rede de segurança: o último bloco do painel costuma ser o conteúdo (às vezes
+   um wrapper sem classe, como o do "ver todos"), então ele também cresce */
+.panel > div:not(.panel-head):not(.legend):last-child { flex: 1 1 auto; min-height: 0; }
+/* Ranking: o bloco ocupa a altura do card (a do painel vizinho) e é a área de
+   scroll que absorve a sobra — o card não cresce quando abre o "ver todos". */
+.ranking-wrap { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.ranking-lista { flex: 1 1 auto; min-height: 120px; display: flex; flex-direction: column; }
+/* Aberto, a lista inteira (137 nomes) não pode ditar a altura da linha da
+   grade, senão o card cresceria e nunca haveria scroll. flex-basis/height 0
+   tira o conteúdo do cálculo de altura; o card continua com a altura do painel
+   vizinho e a lista rola dentro dele. */
+.ranking-lista.barlist-scroll { flex: 1 1 0; height: 0; max-height: none; min-height: 260px; }
+/* rankings agrupados (Estado + País na mesma aba) também precisam repassar a
+   altura para a lista lá dentro */
+.ranking-lista > .ranking-grupo { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+.ranking-vazio { margin: 0; font-size: 11.5px; color: var(--ink-mute); font-family: var(--mono); }
+/* o SVG mantém a proporção (esticá-lo deformaria os rótulos); o wrapper é que
+   cresce e o centraliza na sobra de altura */
+.chart-wrap { position: relative; display: flex; align-items: center; }
+.chart-wrap > svg { width: 100%; max-height: 100%; }
+/* linhas de status distribuídas: com 4 status num card alto, empilhá-las no
+   topo deixava metade do card vazia */
+.panel > .statusbars-list { display: flex; flex-direction: column; justify-content: space-between; }
+.panel > .statusbars-row { align-content: stretch; }
+.statusbars-cell { justify-content: space-between; }
+.panel > .donut-wrap { align-content: center; }
+.panel > .empty { padding: 26px 10px; }
+/* rodapés e legendas continuam colados embaixo */
+.panel > .legend:last-child,
+.panel > .panel-foot { margin-top: auto; padding-top: 10px; }
+.panel-head { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 11px; gap: 10px; }
 .panel-head h3 { font-size: 13.5px; margin: 0; font-weight: 700; }
 .panel-head p { font-size: 11.5px; color: var(--ink-mute); margin: 3px 0 0; font-family: var(--mono); }
 .accordion-toggle {
@@ -459,7 +568,15 @@ body {
 .empty span { font-size: 11.5px; color: var(--ink-mute); max-width: 300px; font-family: var(--mono); }
 
 .barlist { display: flex; flex-direction: column; gap: 10px; }
-.barlist-row { display: grid; grid-template-columns: 110px 1fr auto; align-items: center; gap: 10px; font-size: 12px; }
+/* Dentro de um card, a lista ocupa a altura toda e distribui as linhas: com 10
+   nomes num painel alto (a altura vem do donut ao lado), empilhá-las no topo
+   deixava um terço do card vazio. Quando a lista rola, volta ao normal — aí o
+   espaço já está todo ocupado. */
+.panel .barlist { flex: 1 1 auto; justify-content: space-between; }
+.barlist-scroll .barlist { flex: 0 0 auto; justify-content: flex-start; }
+/* nome flexível em vez de 110px fixos: com rótulos como "Gerente ou
+   Supervisor de Empresa" o corte ficava cedo demais */
+.barlist-row { display: grid; grid-template-columns: minmax(80px, 1.3fr) 1fr auto; align-items: center; gap: 10px; font-size: 12px; }
 .barlist-name { color: var(--ink-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .barlist-track { position: relative; height: 8px; border-radius: 4px; background: var(--line-soft); overflow: hidden; }
 .barlist-fill { display: block; height: 100%; border-radius: 4px; background: var(--accent); }
@@ -602,6 +719,38 @@ td.num, th.num { text-align: right; }
 .module-card p { margin: 0; font-size: 12px; color: var(--ink-mute); line-height: 1.4; }
 .module-arrow { margin-left: auto; color: var(--ink-mute); font-size: 15px; flex-shrink: 0; }
 
+/* O import virou modal: configurar 15 colunas numa faixa espremida entre o
+   cabeçalho e os gráficos era o pior momento do fluxo. Sobre a página, com
+   rolagem própria, cabeçalho e ações sempre visíveis. */
+.import-overlay {
+  position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center;
+  padding: 18px; background: color-mix(in srgb, #000 55%, transparent); backdrop-filter: blur(2px);
+}
+.import-overlay .import-panel {
+  /* largo de propósito: são até 19 colunas para mapear, e cada linha a mais
+     de campos é uma rolagem a menos no meio da configuração */
+  width: min(1480px, 100%); max-height: min(92vh, 1000px); overflow-y: auto;
+  margin: 0; box-shadow: 0 24px 60px rgba(0, 0, 0, .35);
+}
+.import-overlay .import-head {
+  position: sticky; top: 0; z-index: 1; background: var(--panel);
+  padding-bottom: 12px; margin: -2px 0 14px; border-bottom: 1px solid var(--line-soft);
+}
+.import-overlay .import-actions {
+  position: sticky; bottom: 0; background: var(--panel); padding: 12px 0 2px;
+  margin-top: 18px; border-top: 1px solid var(--line-soft); align-items: center;
+}
+.import-pendencia { margin-right: auto; font-size: 11.5px; color: var(--amber); }
+.import-exemplo {
+  font-family: var(--mono); font-size: 10.5px; color: var(--ink-mute);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-height: 13px;
+}
+.import-field-faltando select { border-color: var(--amber); }
+@media (max-width: 700px) {
+  .import-overlay { padding: 10px; }
+  .import-overlay .import-panel { max-height: 94vh; }
+}
+
 .import-panel {
   border: 1px solid var(--line); border-radius: 13px; background: var(--panel); padding: 18px; margin-bottom: 14px;
 }
@@ -612,7 +761,7 @@ td.num, th.num { text-align: right; }
 .import-error { margin-top: 10px; color: var(--red); font-size: 12.5px; }
 .import-hint { margin-top: 6px; color: var(--ink-mute); font-size: 11.5px; }
 .import-file-info { font-size: 12px; color: var(--ink-mute); font-family: var(--mono); margin-bottom: 14px; }
-.import-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.import-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px 12px; }
 @media (max-width: 900px) { .import-grid { grid-template-columns: repeat(2, 1fr); } }
 .import-field { display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; color: var(--ink-dim); }
 .import-field em { color: var(--red); font-style: normal; }
@@ -794,3 +943,128 @@ td.num, th.num { text-align: right; }
   padding-right: 6px;
   overscroll-behavior: contain;
 }
+
+/* Filtro "Personalizado": as duas pontas do intervalo, ao lado dos segmentos. */
+.date-range { display: flex; align-items: center; gap: 8px; }
+.date-range input[type="date"] { width: 150px; font-family: var(--mono); font-size: 12px; }
+.date-range span { font-size: 12px; color: var(--ink-mute); }
+
+/* Controle de apoio (select, data, botão discreto) com o acabamento do campo
+   de busca. Vale em qualquer lugar — o cabeçalho de painel usa para o "ver
+   todos", a tabela usa nos filtros. Antes isto vivia aninhado em .table-tools
+   e o mesmo markup aparecia sem estilo fora dali. */
+.field {
+  font-family: var(--sans); font-size: 12.5px; color: var(--ink);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 9px;
+  padding: 8px 10px; cursor: pointer; max-width: 200px;
+}
+.field:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+input.field[type="date"] { font-family: var(--mono); width: 140px; cursor: text; }
+.field-btn { cursor: pointer; color: var(--ink-dim); white-space: nowrap; transition: border-color .15s, color .15s; }
+.field-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--ink); }
+
+/* Busca e filtros da tabela: mesma linha, recortam só a lista, não os KPIs. */
+.table-tools {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  justify-content: flex-end; flex: 1;
+}
+.table-tools .search { flex: 0 1 240px; min-width: 180px; }
+.table-tools .field { max-width: 170px; }
+.table-tools-sep { font-size: 12px; color: var(--ink-mute); }
+
+/* No cabeçalho do painel o botão é menor, para não competir com o título. */
+.panel-head .field-btn { font-size: 11.5px; padding: 5px 9px; }
+
+/* Status lado a lado (financeiro → ingressos): poucos status, leitura de
+   proporção. Cada célula traz badge, número, barra e percentual. */
+.statusbars-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.statusbars-cell {
+  flex: 1 1 120px; display: flex; flex-direction: column; gap: 4px;
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+  background: var(--panel-2);
+}
+.statusbars-cell .badge { align-self: flex-start; }
+.statusbars-value { font-size: 16px; font-weight: 700; font-family: var(--mono); font-variant-numeric: tabular-nums; line-height: 1.15; }
+.statusbars-cell .barlist-track { width: 100%; }
+.statusbars-pct { font-size: 11px; color: var(--ink-mute); font-family: var(--mono); }
+
+/* Navegação de páginas no rodapé da tabela. */
+.pager { display: inline-flex; align-items: center; gap: 8px; }
+.pager .field-btn { padding: 4px 10px; line-height: 1; font-size: 14px; }
+.pager .field-btn:disabled { opacity: .4; cursor: not-allowed; border-color: var(--line); }
+
+/* Cabeçalho de painel com controles (alternar leitura + ver todos). */
+.panel-head-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+/* Grupos empilhados dentro de um ranking (opção "Ambos"). */
+.ranking-grupo + .ranking-grupo { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line-soft); }
+.ranking-grupo .section-label { display: block; margin: 0 0 6px; }
+
+/* Fluxo de credenciamento em "Todos": um dia por linha, uma barra por hora.
+   A escala é comum aos dias, então a altura compara movimento de verdade. */
+.fluxo-matriz { overflow-x: auto; padding-bottom: 4px; }
+.fluxo-linha {
+  display: grid;
+  grid-template-columns: 52px repeat(var(--horas, 12), minmax(16px, 1fr)) 92px;
+  align-items: end; gap: 3px; min-width: 520px;
+}
+.fluxo-linha + .fluxo-linha { margin-top: 6px; }
+.fluxo-cabecalho { align-items: center; margin-bottom: 2px; }
+.fluxo-hora-rotulo { font-family: var(--mono); font-size: 9.5px; color: var(--ink-mute); text-align: center; }
+.fluxo-dia {
+  font-family: var(--mono); font-size: 11px; color: var(--ink-dim); text-align: left;
+  background: none; border: none; padding: 0; cursor: pointer;
+}
+.fluxo-dia:hover { color: var(--accent); text-decoration: underline; }
+.fluxo-celula {
+  display: flex; align-items: flex-end; justify-content: center;
+  height: 34px; background: var(--line-soft); border-radius: 3px; overflow: hidden;
+}
+.fluxo-barra { display: block; width: 100%; background: var(--accent); border-radius: 3px; }
+.fluxo-pico { background: var(--serie-2); }
+.fluxo-total {
+  font-family: var(--mono); font-size: 11px; color: var(--ink); text-align: right;
+  display: flex; flex-direction: column; line-height: 1.25;
+}
+.fluxo-total em { font-style: normal; font-size: 9.5px; color: var(--ink-mute); }
+
+
+/* Seção de ingressos: o fluxo ocupa a linha inteira (são 12+ horas de barras)
+   e os rankings entram em colunas fluidas — com alturas diferentes, a grade
+   normal abria buracos entre um card e outro. */
+.panel-largo { grid-column: 1 / -1; }
+/* Antes era `columns: 2` (fluxo de coluna, estilo masonry): cada card tinha a
+   altura do próprio conteúdo e as listas terminavam em alturas diferentes,
+   abrindo vãos aleatórios. Como grade, os cards da mesma linha têm a mesma
+   altura e a lista de dentro se distribui nela. */
+.panels-rankings {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px; margin-bottom: 12px; align-items: stretch;
+}
+.panels-rankings > .panel:last-child:nth-child(odd) { grid-column: 1 / -1; }
+@media (max-width: 860px) { .panels-rankings { grid-template-columns: 1fr; } }
+
+/* Um dia só: a matriz vira um gráfico de barras por hora, mais alto, já que
+   não precisa empilhar vários dias. */
+.fluxo-matriz-dia .fluxo-celula { height: 110px; }
+.fluxo-matriz-dia .fluxo-dia { font-size: 12px; font-weight: 700; color: var(--ink); }
+.fluxo-matriz-dia .fluxo-total { font-size: 12px; }
+
+/* número sobre a barra: só no modo de um dia, onde há largura para ele */
+.fluxo-celula { position: relative; }
+.fluxo-valor { display: none; }
+.fluxo-matriz-dia .fluxo-valor {
+  display: block; position: absolute; top: 3px; left: 0; right: 0;
+  text-align: center; font-style: normal; font-family: var(--mono);
+  font-size: 10px; color: var(--ink-dim); pointer-events: none;
+}
+
+/* Legenda do donut clicável: sinaliza que dá para filtrar por ali. */
+.donut-legend-clicavel { border-radius: 6px; padding: 2px 4px !important; transition: background .12s; }
+.donut-legend-clicavel:hover { background: var(--panel-2); }
+.donut-legend-clicavel.on .status-left { color: var(--ink); font-weight: 700; }
+
+/* Campos do import em blocos por assunto: com quase 20 colunas numa grade só,
+   achar "onde está o estande" virava caça ao tesouro. */
+.import-grupo + .import-grupo { margin-top: 14px; }
+.import-grupo .section-label { margin: 0 0 7px; display: flex; align-items: center; gap: 6px; }
+.import-grupo .section-label em { font-style: normal; color: var(--amber); text-transform: none; letter-spacing: 0; }

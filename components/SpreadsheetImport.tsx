@@ -18,12 +18,14 @@ import {
   mapRowsToPedidos,
   servicoFromFileName,
   FINANCEIRO_FIELDS,
+  FINANCEIRO_INGRESSO_FIELDS,
+  suggestFinanceiroIngressoMapping,
   CREDENCIAMENTO_FIELDS,
   OPERACIONAL_FIELDS,
   type SheetTable,
   type ColumnMapping,
   type StatusMapping,
-  type FinanceiroFieldKey,
+  type FinanceiroImportKey,
   type CredenciamentoFieldKey,
   type OperacionalFieldKey,
 } from "@/lib/spreadsheetImport";
@@ -36,7 +38,13 @@ import type {
   ServicoStatus,
 } from "@/lib/dataSource";
 
-type FieldDef<K extends string> = { key: K; label: string; required: boolean };
+type FieldDef<K extends string> = {
+  key: K;
+  label: string;
+  required: boolean;
+  /** Seção do formulário ("Quem contratou", "Onde"…). Sem grupo, cai em "Outros". */
+  grupo?: string;
+};
 
 function SpreadsheetImportPanel<K extends string, V extends string, T>({
   eventId,
@@ -55,9 +63,10 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
   module: string;
   title: string;
   description: string;
-  fields: readonly FieldDef<K>[];
+  /** Função quando o conjunto de campos depende da escolha feita no extraField. */
+  fields: readonly FieldDef<K>[] | ((extra: string) => readonly FieldDef<K>[]);
   statusOptions: { value: V; label: string }[];
-  suggestMappingFn: (headers: string[]) => ColumnMapping<K>;
+  suggestMappingFn: (headers: string[], extra: string) => ColumnMapping<K>;
   suggestStatusMappingFn: (values: string[]) => StatusMapping<V>;
   mapRowsFn: (
     table: SheetTable,
@@ -119,10 +128,16 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
     }
   }
 
-  function applyMappingFor(parsed: SheetTable) {
-    const saved = loadMapping<K, V>(module, eventId!);
+  /**
+   * Monta o mapeamento inicial. O salvo do evento tem prioridade — é o que faz
+   * a planilha do mês seguinte entrar sem reconfiguração — mas isso também
+   * significa que uma escolha ruim (ou uma melhoria posterior na sugestão
+   * automática) fica congelada até alguém pedir para sugerir de novo.
+   */
+  function applyMappingFor(parsed: SheetTable, extra = extraValue, ignorarSalvo = false) {
+    const saved = ignorarSalvo ? null : loadMapping<K, V>(module, eventId!);
     const savedValid = saved && Object.values(saved.mapping).every((col) => !col || parsed.headers.includes(col as string));
-    const nextMapping = savedValid ? saved!.mapping : suggestMappingFn(parsed.headers);
+    const nextMapping = savedValid ? saved!.mapping : suggestMappingFn(parsed.headers, extra);
     setMapping(nextMapping);
 
     const statusCol = nextMapping[STATUS_KEY];
@@ -158,8 +173,9 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
       // cabeçalho diferente (ou é o primeiro arquivo) — pausa a fila e pede revisão manual.
       setTable(parsed);
       setFileName(file.name);
-      if (extraField) setExtraValue(extraField.derive(file.name, parsed));
-      applyMappingFor(parsed);
+      const extraDerivado = extraField ? extraField.derive(file.name, parsed) : "";
+      if (extraField) setExtraValue(extraDerivado);
+      applyMappingFor(parsed, extraDerivado);
       setProcessing(false);
       return;
     }
@@ -179,8 +195,9 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
     await drainQueue();
   }
 
+  const camposAtivos = typeof fields === "function" ? fields(extraValue) : fields;
   const statusValues = table && mapping[STATUS_KEY] ? distinctValues(table, mapping[STATUS_KEY]!) : [];
-  const missingRequired = fields.filter((f) => f.required && !mapping[f.key]);
+  const missingRequired = camposAtivos.filter((f) => f.required && !mapping[f.key]);
   const missingStatusMap = statusValues.some((v) => !statusMapping[v]);
   const canConfirm =
     table &&
@@ -251,7 +268,21 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
   }
 
   return (
-    <div className="import-panel">
+    <div
+      className="import-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      onKeyDown={(e) => {
+        // fechar no Esc é o que se espera de um modal; o clique fora NÃO fecha,
+        // para não perder um mapeamento inteiro por um clique torto
+        if (e.key === "Escape") {
+          setOpen(false);
+          reset();
+        }
+      }}
+    >
+      <div className="import-panel">
       <div className="import-head">
         <div>
           <h3>{title}</h3>
@@ -314,8 +345,18 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
       {table && (
         <>
           <div className="import-file-info">
-            <strong>{fileName}</strong> · {table.rows.length} linhas · {table.headers.length} colunas
+            <strong>{fileName}</strong> · {table.rows.length.toLocaleString("pt-BR")} linhas ·{" "}
+            {table.headers.length} colunas
             {batchTotal > 1 && ` · arquivo ${imported.length + skipped.length + 1} de ${batchTotal}`}
+            <button
+              className="field field-btn"
+              type="button"
+              style={{ marginLeft: 10 }}
+              onClick={() => applyMappingFor(table, extraValue, true)}
+              title="Descarta o mapeamento salvo deste evento e detecta as colunas de novo"
+            >
+              Detectar colunas de novo
+            </button>
           </div>
 
           {extraField && (
@@ -324,7 +365,16 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
                 {extraField.label} <em>*</em>
               </span>
               {extraField.options ? (
-                <select className="input" value={extraValue} onChange={(e) => setExtraValue(e.target.value)}>
+                <select
+                  className="input"
+                  value={extraValue}
+                  onChange={(e) => {
+                    setExtraValue(e.target.value);
+                    // cada origem tem seu conjunto de campos: manter o mapeamento
+                    // anterior deixaria colunas apontando para campos que sumiram.
+                    if (table) applyMappingFor(table, e.target.value);
+                  }}
+                >
                   <option value="">— escolher —</option>
                   {extraField.options.map((o) => (
                     <option key={o.value} value={o.value}>
@@ -345,32 +395,59 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
             </label>
           )}
 
-          <div className="import-grid">
-            {fields.map((f) => (
-              <label className="import-field" key={f.key}>
-                <span>
-                  {f.label} {f.required && <em>*</em>}
-                </span>
-                <select
-                  value={mapping[f.key] ?? ""}
-                  onChange={(e) => {
-                    const col = e.target.value || undefined;
-                    setMapping((prev) => ({ ...prev, [f.key]: col }));
-                    if (f.key === "status") {
-                      setStatusMapping(col && table ? suggestStatusMappingFn(distinctValues(table, col)) : {});
-                    }
-                  }}
-                >
-                  <option value="">— não usar —</option>
-                  {table.headers.map((h) => (
-                    <option key={h} value={h}>
-                      {h}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ))}
-          </div>
+          {/* Campos em blocos por assunto: com quase 20 colunas numa grade
+              única, achar "onde está o estande" virava caça ao tesouro. */}
+          {Array.from(
+            camposAtivos.reduce((mapa, f) => {
+              const g = f.grupo ?? "Outros";
+              mapa.set(g, [...(mapa.get(g) ?? []), f]);
+              return mapa;
+            }, new Map<string, typeof camposAtivos>())
+          ).map(([grupo, campos]) => (
+            <div className="import-grupo" key={grupo}>
+              <p className="section-label">
+                {grupo}
+                {campos.some((f) => f.required && !mapping[f.key]) && <em> — falta preencher</em>}
+              </p>
+              <div className="import-grid">
+                {campos.map((f) => {
+              const col = mapping[f.key];
+              // primeiro valor preenchido da coluna: confere de relance se a
+              // coluna escolhida é mesmo a certa, sem abrir a planilha
+              const exemplo = col
+                ? table.rows.find((r) => r[table.headers.indexOf(col)]?.trim())?.[table.headers.indexOf(col)]?.trim()
+                : "";
+              return (
+                <label className={`import-field ${f.required && !col ? "import-field-faltando" : ""}`} key={f.key}>
+                  <span>
+                    {f.label} {f.required && <em>*</em>}
+                  </span>
+                  <select
+                    value={col ?? ""}
+                    onChange={(e) => {
+                      const novo = e.target.value || undefined;
+                      setMapping((prev) => ({ ...prev, [f.key]: novo }));
+                      if (f.key === "status") {
+                        setStatusMapping(novo && table ? suggestStatusMappingFn(distinctValues(table, novo)) : {});
+                      }
+                    }}
+                  >
+                    <option value="">— não usar —</option>
+                    {table.headers.map((h) => (
+                      <option key={h} value={h}>
+                        {h}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="import-exemplo" title={exemplo || undefined}>
+                    {exemplo ? `ex.: ${exemplo}` : col ? "coluna vazia" : "\u00a0"}
+                  </span>
+                </label>
+              );
+                })}
+              </div>
+            </div>
+          ))}
 
           {mapping[STATUS_KEY] && (
             <div className="import-status-map">
@@ -397,6 +474,19 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
           )}
 
           <div className="import-actions">
+            {/* o que falta para liberar a confirmação, dito na hora — antes o
+                botão só ficava apagado sem explicar o motivo */}
+            {!canConfirm && (
+              <span className="import-pendencia">
+                {missingRequired.length > 0
+                  ? `Falta escolher: ${missingRequired.map((f) => f.label).join(", ")}`
+                  : extraField && !extraValue.trim()
+                  ? `Falta escolher: ${extraField.label}`
+                  : missingStatusMap
+                  ? "Falta o de-para de algum status"
+                  : "Falta mapear a coluna de status"}
+              </span>
+            )}
             {batchTotal > 1 ? (
               <button className="btn" type="button" onClick={handleSkipCurrent}>
                 Pular este arquivo
@@ -412,14 +502,15 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
           </div>
         </>
       )}
+      </div>
     </div>
   );
 }
 
 const FINANCEIRO_STATUS_OPTIONS: { value: InvoiceStatus; label: string }[] = [
   { value: "pago", label: "Pago" },
-  { value: "pendente", label: "Pendente" },
-  { value: "atrasado", label: "Atrasado" },
+  { value: "pendente", label: "Em aberto / vencido" },
+  { value: "cortesia", label: "Cortesia / gratuito" },
   { value: "cancelado", label: "Cancelado" },
 ];
 
@@ -431,14 +522,16 @@ export function SpreadsheetImportFinanceiro({
   onImported: (invoices: Invoice[], fileName: string) => void;
 }) {
   return (
-    <SpreadsheetImportPanel<FinanceiroFieldKey, InvoiceStatus, Invoice>
+    <SpreadsheetImportPanel<FinanceiroImportKey, InvoiceStatus, Invoice>
       eventId={eventId}
       module="financeiro"
       title="Importar planilha — Financeiro"
       description="Selecione um ou vários arquivos de uma vez — os que tiverem o mesmo cabeçalho do primeiro são importados em lote automaticamente; também dá pra subir de novo sempre que atualizar — reenviar um arquivo com o mesmo nome substitui só as linhas dele, arquivos diferentes se somam. O mapeamento abaixo já vem sugerido pelo nome das colunas — confira e ajuste só o que estiver errado."
-      fields={FINANCEIRO_FIELDS}
+      fields={(origem) => (origem === "Ingresso" ? FINANCEIRO_INGRESSO_FIELDS : FINANCEIRO_FIELDS)}
       statusOptions={FINANCEIRO_STATUS_OPTIONS}
-      suggestMappingFn={suggestFinanceiroMapping}
+      suggestMappingFn={(headers, origem) =>
+        origem === "Ingresso" ? suggestFinanceiroIngressoMapping(headers) : suggestFinanceiroMapping(headers)
+      }
       suggestStatusMappingFn={suggestFinanceiroStatusMapping}
       mapRowsFn={mapRowsToInvoices}
       extraField={{
@@ -447,7 +540,6 @@ export function SpreadsheetImportFinanceiro({
         options: [
           { value: "auto", label: "Usar a coluna Origem da planilha" },
           { value: "Expositor", label: "Expositor" },
-          { value: "Portaria", label: "Portarias" },
           { value: "Ingresso", label: "Ingresso" },
         ],
         derive: sugerirOrigemFinanceiro,
@@ -459,10 +551,9 @@ export function SpreadsheetImportFinanceiro({
 
 const OPERACIONAL_STATUS_OPTIONS: { value: ServicoStatus; label: string }[] = [
   { value: "pago", label: "Pago" },
-  { value: "pendente", label: "Pendente / em aberto" },
-  { value: "cancelado", label: "Recusado / cancelado" },
-  { value: "isento", label: "Isentado / isento" },
-  { value: "semDebito", label: "Sem débito / sem crédito" },
+  { value: "pendente", label: "Em aberto / pendente" },
+  { value: "cancelado", label: "Cancelado / recusado" },
+  { value: "isento", label: "Isento / cortesia / sem débito" },
 ];
 
 export function SpreadsheetImportOperacional({
@@ -498,7 +589,7 @@ export function SpreadsheetImportOperacional({
 
 const CREDENCIAMENTO_STATUS_OPTIONS: { value: CredenciamentoStatus; label: string }[] = [
   { value: "credenciado", label: "Credenciado" },
-  { value: "pendente", label: "Pendente" },
+  { value: "pendente", label: "Em aberto" },
   { value: "cancelado", label: "Cancelado" },
 ];
 

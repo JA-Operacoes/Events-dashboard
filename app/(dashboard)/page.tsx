@@ -131,7 +131,7 @@ export default function Home() {
     <>
       <EventHero />
 
-      <div className="panels" style={{ gridTemplateColumns: "1fr 1fr" }}>
+      <div className="panels">
         <div className="panel">
           <div className="panel-head">
             <div>

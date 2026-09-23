@@ -10,6 +10,7 @@ import { SpreadsheetImportCredenciamento } from "@/components/SpreadsheetImport"
 import { aggregateCredenciamento, mergeImportedParticipantes } from "@/lib/spreadsheetImport";
 import { Donut, StatusBars, LineChart } from "@/components/charts";
 import { getCached, setCached } from "@/lib/pageCache";
+import { enviarImportEmLotes } from "@/lib/importClient";
 import { matchesPeriod, formatRelativeTime } from "@/lib/period";
 import { notifySuccess, notifyWarning, notifyError } from "@/lib/swal";
 
@@ -48,7 +49,10 @@ export default function CredenciamentoPage() {
     });
   }, [rawParticipantes, statusFilter, categoria, period, search]);
 
-  const data = apiData || hasImported ? aggregateCredenciamento(filteredParticipantes) : null;
+  const data = useMemo(
+    () => (apiData || hasImported ? aggregateCredenciamento(filteredParticipantes) : null),
+    [apiData, hasImported, filteredParticipantes]
+  );
 
   const importedFiles = Array.from(
     importedParticipantes.reduce((map, p) => {
@@ -74,22 +78,18 @@ export default function CredenciamentoPage() {
       notifyWarning("Selecione uma edição primeiro", "Escolha (ou crie) uma edição do evento antes de importar a planilha — sem isso não há onde salvar os dados.");
       return;
     }
-    setImportedParticipantes((prev) => {
-      const next = mergeImportedParticipantes(prev, participantes, fileName);
-      setCached(`credenciamento:${editionId}`, next);
-      return next;
-    });
-    const res = await fetch("/api/credenciamento/import", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ editionId, sourceFile: fileName, participantes }),
-    });
-    if (!res.ok) {
+    const proximo = mergeImportedParticipantes(importedParticipantes, participantes, fileName);
+    setImportedParticipantes(proximo);
+    setCached(`credenciamento:${editionId}`, proximo);
+
+    const r = await enviarImportEmLotes("/api/credenciamento/import", editionId, fileName, "participantes", participantes);
+    if (!r.ok) {
       loadImported();
-      notifyError("Falha ao importar planilha", "Os dados não foram salvos — tente novamente em instantes.");
+      notifyError("Falha ao importar planilha", r.erro);
       return;
     }
-    notifySuccess("Planilha importada", `${participantes.length} linha(s) de "${fileName}" foram salvas.`);
+    notifySuccess("Planilha importada", `${participantes.length.toLocaleString("pt-BR")} linha(s) de "${fileName}" foram salvas.`);
+    loadImported();
   }
 
   async function removeImportedFile(fileName: string) {

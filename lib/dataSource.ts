@@ -17,7 +17,8 @@ export type ModuleContext = {
 
 /* ---------------------------- Financeiro ---------------------------- */
 
-export type InvoiceStatus = "pago" | "pendente" | "atrasado" | "cancelado";
+/** "cortesia" é o ingresso/convite liberado sem cobrança — valor zero, mas nem pago nem pendente. */
+export type InvoiceStatus = "pago" | "pendente" | "cortesia" | "cancelado";
 
 /**
  * De onde vem a receita, para o recorte da tela. A origem vem da coluna
@@ -26,12 +27,13 @@ export type InvoiceStatus = "pago" | "pendente" | "atrasado" | "cancelado";
  * fica sem classificação e aparece só na visão geral — melhor não aparecer num
  * recorte do que aparecer no recorte errado.
  */
-export type OrigemReceita = "expositor" | "portaria" | "ingresso";
+export type OrigemReceita = "expositor" | "ingresso";
 
 export type Invoice = {
   numero: string;
   cliente: string;
   cnpj: string;
+  /** Mantido para as linhas já gravadas; o painel não usa mais esta data. */
   vencimento: string;
   pagamento: string | null;
   forma: string;
@@ -42,6 +44,12 @@ export type Invoice = {
    * ingresso que trazem a coluna; sem ela, a duplicata conta como 1.
    */
   quantidade?: number | null;
+  /**
+   * Campos que só a planilha de ingresso traz (relatório de credenciamento).
+   * Ficam num objeto à parte porque não existem em contas a receber — e é ele
+   * que alimenta os painéis exclusivos do recorte de ingressos.
+   */
+  ingresso?: DadosIngresso | null;
   /** Texto cru da coluna "Origem" da planilha — preservado para a tabela. */
   origem?: string;
   /** Classificação da origem usada pelo filtro; nula quando não se encaixa em nenhuma. */
@@ -53,6 +61,57 @@ export type Invoice = {
   conta3?: string | null;
   /** Preenchido apenas no modo planilha — identifica qual arquivo importado gerou esta linha. */
   sourceFile?: string;
+};
+
+export type DadosIngresso = {
+  /** Se a pessoa passou pela catraca. Nulo quando a planilha não informa. */
+  compareceu?: boolean | null;
+  /** Valor devido (total a pagar), que pode ser maior que o pago. */
+  valorDevido?: number | null;
+  /** Lote/origem do convite — no relatório, a coluna "Edição" ("… - LIDER - CONVIDADO VIP"). */
+  convite?: string;
+  categoria?: string;
+  cargo?: string;
+  segmento?: string;
+  estado?: string;
+  pais?: string;
+  /** Data do cadastro, texto cru da planilha. */
+  cadastro?: string;
+  /**
+   * Dia em que a pessoa compareceu. No relatório de credenciamento é a data de
+   * impressão do crachá — é quando ela passou no balcão.
+   */
+  dataComparecimento?: string;
+  /** Hora em que passou no balcão ("14:25:03"), da mesma origem da data. */
+  horaComparecimento?: string;
+};
+
+/** Leituras que só fazem sentido no recorte de ingressos. */
+export type IngressoStats = {
+  compareceram: number;
+  faltaram: number;
+  /** Percentual de comparecimento (0-100); nulo quando a planilha não traz a coluna. */
+  taxaComparecimento: number | null;
+  /** Valor ainda em aberto: devido menos pago. */
+  valorEmAberto: number | null;
+  /** Comparecimento separado por situação de pagamento. */
+  comparecimentoPorStatus: Array<{ status: InvoiceStatus; compareceu: number; faltou: number }>;
+  /** Rankings completos e ordenados — a tela mostra o topo e abre o resto sob demanda. */
+  convites: Array<{ name: string; value: number }>;
+  categorias: Array<{ name: string; value: number }>;
+  cargos: Array<{ name: string; value: number }>;
+  segmentos: Array<{ name: string; value: number }>;
+  estados: Array<{ name: string; value: number }>;
+  paises: Array<{ name: string; value: number }>;
+  /** Cadastros por dia, para a curva de inscrição. */
+  cadastrosPorDia: Array<{ date: string; cadastros: number }>;
+  /** Público por dia do evento, em ordem de data. */
+  comparecimentoPorDia: Array<{ name: string; value: number }>;
+  /** Público por dia e hora — alimenta o gráfico de fluxo do credenciamento. */
+  comparecimentoPorHora: Array<{ dia: string; hora: number; pessoas: number }>;
+  /** Documentos que aparecem em mais de um ingresso. */
+  documentosRepetidos: number;
+  documentosDistintos: number;
 };
 
 export type FinanceiroFilters = {
@@ -70,13 +129,12 @@ export type FinanceiroData = {
     totalRecebido: number | null;
     ticketMedio: number | null;
     qtdDuplicatas: number | null;
-    pontualidadeDias: number | null;
     /** Ingressos comprados — soma das quantidades (duplicata sem quantidade conta 1). */
     qtdIngressos: number | null;
-    /** Média de ingressos por comprador (CNPJ/CPF distinto). */
-    mediaPorComprador: number | null;
   };
-  timeline: Array<{ date: string; recebido: number; previsto: number }>;
+  /** Recebimentos por dia. Só o realizado: o previsto dependia do vencimento,
+   *  que saiu do painel porque o ERP regera a duplicata ao vencer. */
+  timeline: Array<{ date: string; recebido: number }>;
   paymentMethods: Array<{ label: string; value: number }>;
   topClients: Array<{ name: string; value: number }>;
   statusBreakdown: Array<{ label: InvoiceStatus; value: number }>;
@@ -84,6 +142,8 @@ export type FinanceiroData = {
   contas: Array<{ name: string; value: number }>;
   /** Quanto cada origem representa — vazio quando a planilha não traz a coluna. */
   origens: Array<{ label: OrigemReceita; value: number }>;
+  /** Preenchido quando há duplicatas com dados de ingresso; nulo caso contrário. */
+  ingressoStats: IngressoStats | null;
   invoices: Invoice[];
 };
 
@@ -100,12 +160,12 @@ export async function fetchFinanceiro(
 /* ---------------------------- Operacional --------------------------- */
 
 /**
- * Status de PAGAMENTO do pedido de serviço — é o que as planilhas de
- * contratação trazem. "isento" é o expositor dispensado da cobrança;
- * "semDebito" é a linha que não gera cobrança nenhuma (cortesia do contrato,
- * serviço incluso), diferente de uma cobrança ainda em aberto.
+ * Status de PAGAMENTO do pedido de serviço, como as planilhas de contratação
+ * trazem. "isento" cobre tudo que não gera cobrança (isenção, cortesia, sem
+ * débito/crédito) e "cancelado" cobre tudo que foi recusado ou desfeito —
+ * separar esses casos criava status que ninguém usava para decidir nada.
  */
-export type ServicoStatus = "pago" | "pendente" | "cancelado" | "isento" | "semDebito";
+export type ServicoStatus = "pago" | "pendente" | "cancelado" | "isento";
 
 /**
  * Um pedido de serviço operacional feito por um expositor (uma linha da
@@ -150,6 +210,24 @@ export type PedidoServico = {
    * é sempre o total daquele pedido. Nulo quando a planilha não tem valor.
    */
   valor: number | null;
+  /**
+   * Potência elétrica contratada, em kVA. Só o relatório de elétrica traz —
+   * é o número que dimensiona quadro, cabeamento e gerador do pavilhão.
+   */
+  kva: number | null;
+  /** Área do estande em m², quando a planilha informa. */
+  area: number | null;
+  /**
+   * O que foi contratado dentro do serviço: "Câmera de Monitoramento",
+   * "Mesa redonda"... O serviço diz de qual planilha veio; o equipamento diz
+   * qual item daquela planilha.
+   */
+  equipamento: string;
+  /**
+   * Variação do item — "220V" na elétrica, "Bilíngue" na recepcionista. Cada
+   * serviço chama de um jeito, por isso o campo é genérico.
+   */
+  tipo: string;
   /** Preenchido apenas no modo planilha — identifica qual arquivo importado gerou esta linha. */
   sourceFile?: string;
 };
@@ -173,6 +251,8 @@ export type OperacionalData = {
     taxaIsencao: number | null;
     /** Quantos expositores diferentes têm pedido nesta edição. */
     qtdExpositores: number | null;
+    /** Potência total contratada (kVA). Nulo quando nenhuma linha informa. */
+    kvaTotal: number | null;
   };
   servicos: Array<{ label: string; value: number }>;
   /** Ranking completo de expositores por quantidade — a tela recorta o topo. */
@@ -180,6 +260,10 @@ export type OperacionalData = {
   statusBreakdown: Array<{ label: ServicoStatus; value: number }>;
   /** Itens contratados por tipo de estande — só existe quando a planilha traz a coluna. */
   tiposEstande: Array<{ name: string; value: number }>;
+  /** Itens por equipamento contratado — vazio quando a planilha não tem a coluna. */
+  equipamentos: Array<{ name: string; value: number }>;
+  /** Itens por variação/tipo do item — vazio quando a planilha não tem a coluna. */
+  tipos: Array<{ name: string; value: number }>;
   pedidos: PedidoServico[];
 };
 

@@ -4,7 +4,13 @@ import { useEffect, useMemo, useState } from "react";
 import { useEvent } from "@/lib/eventContext";
 import { useI18n } from "@/lib/i18n";
 import { useAuth } from "@/lib/auth";
-import { fetchOperacional, type OperacionalData, type OperacionalFilters, type PedidoServico } from "@/lib/dataSource";
+import {
+  fetchOperacional,
+  type OperacionalData,
+  type OperacionalFilters,
+  type PedidoServico,
+  type ServicoStatus,
+} from "@/lib/dataSource";
 import { ConnChip, Empty, EmptyTableRow, KpiRow, int, money, pct } from "@/components/ui";
 import { SpreadsheetImportOperacional } from "@/components/SpreadsheetImport";
 import {
@@ -13,11 +19,14 @@ import {
   nomeArquivoCurto,
   tipoEstandeAgrupado,
 } from "@/lib/spreadsheetImport";
-import { Donut, BarList, StatusBars } from "@/components/charts";
+import { Donut, BarList, StatusBars, PALETTE } from "@/components/charts";
 import { getCached, setCached } from "@/lib/pageCache";
+import { combina } from "@/lib/busca";
+import { enviarImportEmLotes } from "@/lib/importClient";
 import { formatRelativeTime, parseDateLoose } from "@/lib/period";
 import { sugerir } from "@/lib/fuzzy";
 import { notifySuccess, notifyWarning, notifyError } from "@/lib/swal";
+import { exportarPlanilha } from "@/lib/exportar";
 
 // quantos expositores o ranking mostra antes de pedir "ver todos"
 const RANKING_VISIVEL = 10;
@@ -34,12 +43,22 @@ export default function OperacionalPage() {
   const [donutVariant, setDonutVariant] = useState<"full" | "half">("full");
   // o ranking mostra os 10 primeiros; o resto abre sob demanda
   const [verTodosExpositores, setVerTodosExpositores] = useState(false);
+  // busca só do ranking, liberada junto com o "ver todos" — serve para achar um
+  // expositor fora do top sem mexer nos filtros da tela inteira
+  const [buscaRanking, setBuscaRanking] = useState("");
   // opcional — só faz sentido quando a planilha importada traz a coluna de tipo/montagem.
   const [tipoFilter, setTipoFilter] = useState("all");
+  // clicar num equipamento recorta a tela para ele
+  const [equipamentoFiltro, setEquipamentoFiltro] = useState("all");
   const [search, setSearch] = useState("");
   // busca específica da tabela de pedidos — filtra só a lista abaixo, sem
   // recalcular KPIs/gráficos (diferente da busca geral, que filtra tudo).
   const [tableSearch, setTableSearch] = useState("");
+  // Filtros próprios da tabela: recortam a lista sem mexer nos KPIs e
+  // gráficos, que continuam respondendo aos filtros do topo.
+  const [tableRange, setTableRange] = useState({ de: "", ate: "" });
+  const [tableStatus, setTableStatus] = useState<"all" | ServicoStatus>("all");
+  const [tableTurno, setTableTurno] = useState("all");
   const [connState, setConnState] = useState<"pending" | "connected" | "error">("pending");
   const [apiData, setApiData] = useState<OperacionalData | null>(null);
   // quando veio a última atualização de dados (import de planilha) — é o que
@@ -89,31 +108,66 @@ export default function OperacionalPage() {
   }, [rawPedidos, search]);
 
   const filteredPedidos = useMemo(() => {
-    const term = search.trim().toLowerCase();
+    const term = search.trim();
     return rawPedidos.filter((p) => {
       if (statusFilter !== "all" && p.status !== statusFilter) return false;
       if (servico !== "all" && p.servico !== servico) return false;
       if (tipoFilter !== "all" && tipoEstandeAgrupado(p.tipoEstande) !== tipoFilter) return false;
-      if (term) {
-        const haystack = `${p.expositor} ${p.nomeFantasia} ${p.cnpj} ${p.estande} ${p.turno}`.toLowerCase();
-        if (!haystack.includes(term)) return false;
-      }
+      if (equipamentoFiltro !== "all" && tipoEstandeAgrupado(p.equipamento) !== equipamentoFiltro) return false;
+      if (term && !combina(term, [p.expositor, p.nomeFantasia, p.cnpj, p.estande, p.turno, p.servico])) return false;
       return true;
     });
-  }, [rawPedidos, statusFilter, servico, tipoFilter, search]);
+  }, [rawPedidos, statusFilter, servico, tipoFilter, equipamentoFiltro, search]);
 
-  const data = apiData || hasImported ? aggregateOperacional(filteredPedidos) : null;
+  // memoizado pelo mesmo motivo do financeiro: a agregação roda em cima da
+  // lista inteira e não pode ser refeita a cada render.
+  const data = useMemo(
+    () => (apiData || hasImported ? aggregateOperacional(filteredPedidos) : null),
+    [apiData, hasImported, filteredPedidos]
+  );
+
+  // turnos presentes nos dados — lista fixa deixaria opção que nunca filtra nada
+  const turnosDisponiveis = useMemo(
+    () =>
+      Array.from(new Set((data?.pedidos ?? []).map((p) => p.turno).filter(Boolean))).sort((a, b) =>
+        a.localeCompare(b, "pt-BR")
+      ),
+    [data]
+  );
 
   const visiblePedidos = useMemo(() => {
-    const term = tableSearch.trim().toLowerCase();
-    const list = data?.pedidos ?? [];
-    if (!term) return list;
-    return list.filter((p) => `${p.expositor} ${p.nomeFantasia} ${p.estande}`.toLowerCase().includes(term));
-  }, [data, tableSearch]);
+    const term = tableSearch.trim();
+    return (data?.pedidos ?? []).filter((p) => {
+      if (tableStatus !== "all" && p.status !== tableStatus) return false;
+      if (tableTurno !== "all" && p.turno !== tableTurno) return false;
+      if (tableRange.de || tableRange.ate) {
+        // uma ponta só do intervalo já vale como limite aberto
+        const alvo = p.dataInicio;
+        const t = parseDateLoose(alvo);
+        if (Number.isNaN(t)) return false;
+        if (tableRange.de) {
+          const de = parseDateLoose(tableRange.de);
+          if (!Number.isNaN(de) && t < de) return false;
+        }
+        if (tableRange.ate) {
+          const ate = parseDateLoose(tableRange.ate) + 24 * 60 * 60 * 1000 - 1;
+          if (!Number.isNaN(ate) && t > ate) return false;
+        }
+      }
+      if (term && !combina(term, [p.expositor, p.nomeFantasia, p.estande, p.cnpj, p.servico, p.turno])) return false;
+      return true;
+    });
+  }, [data, tableSearch, tableStatus, tableTurno, tableRange]);
+
+  const filtrosTabelaAtivos =
+    tableStatus !== "all" || tableTurno !== "all" || !!tableRange.de || !!tableRange.ate || !!tableSearch.trim();
 
   // total só faz sentido quando a busca recorta pra um expositor/estande
   // específico — na visão geral (sem busca) fica sem essa soma na tela.
   const visibleTotal = useMemo(() => visiblePedidos.reduce((s, p) => s + p.quantidade, 0), [visiblePedidos]);
+
+  const LINHAS_POR_PAGINA = 100;
+  const [pagina, setPagina] = useState(1);
 
   const [sortKey, setSortKey] = useState<keyof PedidoServico | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
@@ -185,6 +239,8 @@ export default function OperacionalPage() {
         show: has((p) => p.tipoEstande),
         format: (p: PedidoServico) => tipoEstandeAgrupado(p.tipoEstande),
       },
+      { key: "equipamento", label: "Equipamento", cls: "", show: has((p) => p.equipamento) },
+      { key: "tipo", label: "Tipo", cls: "", show: has((p) => p.tipo) },
       { key: "dataInicio", label: t("col.dataInicio"), cls: "", show: has((p) => p.dataInicio) },
       { key: "dataFim", label: t("col.dataFim"), cls: "", show: has((p) => p.dataFim) },
       { key: "horaInicio", label: t("col.horaInicio"), cls: "", show: has((p) => p.horaInicio) },
@@ -198,12 +254,42 @@ export default function OperacionalPage() {
         show: has((p) => p.valor),
         format: (p: PedidoServico) => (p.valor == null ? "—" : money(p.valor)),
       },
+      {
+        key: "kva",
+        label: "kVA",
+        cls: "num",
+        show: has((p) => p.kva),
+        format: (p: PedidoServico) => (p.kva == null ? "—" : p.kva.toLocaleString("pt-BR")),
+      },
+      {
+        key: "area",
+        label: "Área (m²)",
+        cls: "num",
+        show: has((p) => p.area),
+        format: (p: PedidoServico) => (p.area == null ? "—" : p.area.toLocaleString("pt-BR")),
+      },
       { key: "dias", label: t("col.dias"), cls: "num", show: has((p) => p.dias) },
       { key: "status", label: t("col.status"), cls: "", show: true },
     ];
     return defs.filter((d) => d.show);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
+
+  const totalPaginas = Math.max(1, Math.ceil(visiblePedidos.length / LINHAS_POR_PAGINA));
+
+  // filtro novo devolve lista nova: seguir na página anterior mostraria o meio
+  // do resultado e parece que a busca não encontrou nada
+  const assinaturaFiltros = `${tableSearch}|${tableStatus}|${tableTurno}|${tableRange.de}|${tableRange.ate}|${search}|${statusFilter}|${servico}|${tipoFilter}|${equipamentoFiltro}`;
+  const [filtrosAnteriores, setFiltrosAnteriores] = useState(assinaturaFiltros);
+  if (filtrosAnteriores !== assinaturaFiltros) {
+    setFiltrosAnteriores(assinaturaFiltros);
+    setPagina(1);
+  }
+  const paginaAtual = Math.min(pagina, totalPaginas);
+  const linhasDaPagina = useMemo(
+    () => sortedPedidos.slice((paginaAtual - 1) * LINHAS_POR_PAGINA, paginaAtual * LINHAS_POR_PAGINA),
+    [sortedPedidos, paginaAtual]
+  );
 
   const importedFiles = Array.from(
     importedPedidos.reduce((map, p) => {
@@ -231,23 +317,18 @@ export default function OperacionalPage() {
       notifyWarning("Selecione uma edição primeiro", "Escolha (ou crie) uma edição do evento antes de importar a planilha — sem isso não há onde salvar os dados.");
       return;
     }
-    // otimista: mostra na hora, e persiste em paralelo — se falhar, recarrega do banco pra não ficar dessincronizado.
-    setImportedPedidos((prev) => {
-      const next = mergeImportedPedidos(prev, pedidos, fileName);
-      setCached(`operacional:${editionId}`, next);
-      return next;
-    });
-    const res = await fetch("/api/operacional/import", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ editionId, sourceFile: fileName, pedidos }),
-    });
-    if (!res.ok) {
+    const proximo = mergeImportedPedidos(importedPedidos, pedidos, fileName);
+    setImportedPedidos(proximo);
+    setCached(`operacional:${editionId}`, proximo);
+
+    const r = await enviarImportEmLotes("/api/operacional/import", editionId, fileName, "pedidos", pedidos);
+    if (!r.ok) {
       loadImported();
-      notifyError("Falha ao importar planilha", "Os dados não foram salvos — tente novamente em instantes.");
+      notifyError("Falha ao importar planilha", r.erro);
       return;
     }
-    notifySuccess("Planilha importada", `${pedidos.length} linha(s) de "${fileName}" foram salvas.`);
+    notifySuccess("Planilha importada", `${pedidos.length.toLocaleString("pt-BR")} linha(s) de "${fileName}" foram salvas.`);
+    loadImported();
   }
 
   async function removeImportedFile(fileName: string) {
@@ -263,19 +344,36 @@ export default function OperacionalPage() {
     if (!res.ok) loadImported();
   }
 
-  // ordem de leitura: quem contratou, o que foi contratado e quanto saiu isento
+  // ordem de leitura: quem contratou, o que foi contratado e quanto saiu isento.
+  // A potência entra como quarto cartão só quando a planilha do serviço traz
+  // kVA — é o caso do relatório de elétrica.
+  // fechado mostra o topo; aberto mostra tudo, filtrado pela busca do card
+  const rankingVisivel = useMemo(() => {
+    const todos = data?.topExpositores ?? [];
+    if (!verTodosExpositores) return todos.slice(0, RANKING_VISIVEL);
+    return buscaRanking.trim() ? todos.filter((e) => combina(buscaRanking, [e.name])) : todos;
+  }, [data?.topExpositores, verTodosExpositores, buscaRanking]);
+
   const KPI_DEFS = [
-    { key: "qtdExpositores", label: t("operacional.kpi.expositores"), fmt: int },
-    { key: "totalItens", label: t("operacional.kpi.itens"), fmt: int },
-    { key: "taxaIsencao", label: t("operacional.kpi.isencao"), fmt: pct },
-  ] as const;
+    { key: "qtdExpositores" as const, label: t("operacional.kpi.expositores"), fmt: int },
+    { key: "totalItens" as const, label: t("operacional.kpi.itens"), fmt: int },
+    { key: "taxaIsencao" as const, label: t("operacional.kpi.isencao"), fmt: pct },
+    ...(data?.kpis.kvaTotal != null
+      ? [
+          {
+            key: "kvaTotal" as const,
+            label: "Potência contratada",
+            fmt: (v: number | null) => (v == null ? "—" : `${v.toLocaleString("pt-BR")} kVA`),
+          },
+        ]
+      : []),
+  ];
 
   const STATUS_LABEL: Record<string, string> = {
     pago: t("status.pago"),
     pendente: t("status.pendente"),
-    cancelado: t("status.recusado"),
+    cancelado: t("status.cancelado"),
     isento: t("status.isento"),
-    semDebito: t("status.semDebito"),
   };
   // não existe classe de badge por status de serviço — reaproveita as do
   // financeiro pela semântica: pago é o desfecho positivo, recusado é
@@ -285,19 +383,70 @@ export default function OperacionalPage() {
     pendente: "pendente",
     cancelado: "atrasado",
     isento: "cancelado",
-    semDebito: "cancelado",
   };
   const STATUS_COLOR: Record<string, string> = {
     pago: "var(--good)",
     pendente: "var(--amber)",
     cancelado: "var(--red)",
     isento: "var(--teal)",
-    semDebito: "var(--ink-mute)",
   };
+
+  /**
+   * Cor fixa por serviço, calculada sobre TODOS os serviços da edição (não
+   * sobre o resultado filtrado) e em ordem alfabética. Assim "Limpeza" tem a
+   * mesma cor com a tela inteira ou filtrada por ela — antes a cor vinha da
+   * posição na lista e mudava a cada filtro.
+   */
+  const corDoServico = useMemo(() => {
+    const nomes = Array.from(new Set(rawPedidos.map((p) => p.servico).filter(Boolean))).sort((a, b) =>
+      a.localeCompare(b, "pt-BR")
+    );
+    const mapa = new Map<string, string>();
+    nomes.forEach((nome, i) => mapa.set(nome, PALETTE[i % PALETTE.length]));
+    return (nome: string) => mapa.get(nome);
+  }, [rawPedidos]);
 
   // quantidades são contagens de pessoas/itens, não dinheiro — o formatador
   // padrão dos gráficos é moeda, então todos recebem este aqui.
   const qtdFmt = (v: number) => v.toLocaleString("pt-BR");
+
+  /**
+   * Exporta a lista como ela está: mesmos filtros, mesma ordenação e as mesmas
+   * colunas que a tabela decidiu mostrar. O arquivo tem de bater com a tela,
+   * senão vira uma segunda fonte de verdade.
+   */
+  function handleExportar() {
+    const linhas = sortedPedidos;
+    if (!linhas.length) {
+      notifyWarning("Nada para exportar", "Os filtros atuais não deixaram nenhum pedido na lista.");
+      return;
+    }
+
+    const filtrosNoNome = [
+      servico !== "all" ? servico : "",
+      statusFilter !== "all" ? STATUS_LABEL[statusFilter] : "",
+      tipoFilter !== "all" ? tipoFilter : "",
+    ].filter(Boolean);
+
+    const total = exportarPlanilha({
+      prefixo: "operacional",
+      contexto: [event?.name ?? "", edition?.label ?? "", ...filtrosNoNome],
+      aba: servico !== "all" ? servico : "Operacional",
+      linhas,
+      colunas: COLUMNS.map((c) => ({
+        titulo: c.label,
+        valor: (p: PedidoServico) => {
+          if (c.key === "status") return STATUS_LABEL[p.status] ?? p.status;
+          const v = c.format ? c.format(p) : p[c.key];
+          if (v === null || v === undefined || v === "") return "";
+          // quantidade e dias saem como número para o Excel poder somar
+          return typeof v === "number" ? v : String(v);
+        },
+      })),
+    });
+
+    notifySuccess("Planilha exportada", `${total.toLocaleString("pt-BR")} linha(s) com os filtros atuais.`);
+  }
 
   async function load() {
     setConnState("pending");
@@ -320,6 +469,7 @@ export default function OperacionalPage() {
     // o filtro ao trocar de edição deixaria a tela vazia sem motivo aparente.
     setServico("all");
     setTipoFilter("all");
+    setEquipamentoFiltro("all");
     loadImported(); // revalida com o banco por baixo dos panos
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -347,6 +497,11 @@ export default function OperacionalPage() {
               contexto={[event?.name ?? "", edition?.label ?? ""]}
               onImported={handleImported}
             />
+          )}
+          {(hasImported || apiData) && (
+            <button className="btn" type="button" onClick={handleExportar}>
+              Exportar planilha
+            </button>
           )}
           {canManageData && (
             <button className="btn primary" type="button" onClick={load}>
@@ -387,7 +542,7 @@ export default function OperacionalPage() {
           {/* são status de PAGAMENTO do pedido: todos entram como filtro,
               porque cobrar o pendente e conferir o isento são partes
               diferentes do mesmo trabalho. */}
-          {(["all", "pago", "pendente", "cancelado", "isento", "semDebito"] as const).map((v) => (
+          {(["all", "pago", "pendente", "cancelado", "isento"] as const).map((v) => (
             <button key={v} className={statusFilter === v ? "on" : ""} onClick={() => setStatusFilter(v)}>
               {v === "all" ? t("common.allStatus") : STATUS_LABEL[v]}
             </button>
@@ -429,23 +584,39 @@ export default function OperacionalPage() {
               <p>{t("operacional.ranking.desc")}</p>
             </div>
             {(data?.topExpositores.length ?? 0) > RANKING_VISIVEL && (
-              <button className="btn" type="button" onClick={() => setVerTodosExpositores((v) => !v)}>
-                {verTodosExpositores
-                  ? `Ver só os ${RANKING_VISIVEL} primeiros`
-                  : `Ver todos (${data!.topExpositores.length})`}
+              <button className="field field-btn" type="button" onClick={() => {
+                  setVerTodosExpositores((v) => !v);
+                  setBuscaRanking("");
+                }}>
+                {verTodosExpositores ? "Ver menos" : `Ver todos (${data!.topExpositores.length})`}
               </button>
             )}
           </div>
           {!data?.topExpositores.length ? (
             <Empty glyph="▤" title={t("operacional.ranking.empty.title")} desc={t("operacional.ranking.empty.desc")} />
           ) : (
-            <div className={verTodosExpositores ? "barlist-scroll scroll-slim" : undefined}>
-              <BarList
-                data={verTodosExpositores ? data.topExpositores : data.topExpositores.slice(0, RANKING_VISIVEL)}
-                valueFmt={qtdFmt}
-                selected={search}
-                onSelect={(name) => setSearch((prev) => (prev === name ? "" : name))}
-              />
+            /* fechado: só o topo do ranking. Aberto: a lista inteira com busca
+               e scroll dentro do próprio card — sem esticar o card. */
+            <div className="ranking-wrap">
+              {verTodosExpositores && (
+                <input
+                  className="input"
+                  placeholder="Buscar expositor no ranking…"
+                  value={buscaRanking}
+                  onChange={(e) => setBuscaRanking(e.target.value)}
+                />
+              )}
+              <div className={`ranking-lista ${verTodosExpositores ? "barlist-scroll scroll-slim" : ""}`}>
+                <BarList
+                  data={rankingVisivel}
+                  valueFmt={qtdFmt}
+                  selected={search}
+                  onSelect={(name) => setSearch((prev) => (prev === name ? "" : name))}
+                />
+              </div>
+              {verTodosExpositores && !rankingVisivel.length && (
+                <p className="ranking-vazio">Nenhum expositor com esse nome.</p>
+              )}
             </div>
           )}
         </div>
@@ -472,7 +643,14 @@ export default function OperacionalPage() {
               desc={t("operacional.donut.empty.desc")}
             />
           ) : (
-            <Donut data={data.servicos} valueFmt={qtdFmt} variant={donutVariant} />
+            <Donut
+              data={data.servicos}
+              valueFmt={qtdFmt}
+              variant={donutVariant}
+              colorFor={corDoServico}
+              selected={servico === "all" ? undefined : servico}
+              onSelect={(nome) => setServico((atual) => (atual === nome ? "all" : nome))}
+            />
           )}
         </div>
       </div>
@@ -508,7 +686,39 @@ export default function OperacionalPage() {
           )}
         </div>
 
-        <div className="panel">
+        {(data?.equipamentos.length ?? 0) > 0 && (
+          <div className="panel">
+            <div className="panel-head">
+              <div>
+                <h3>Por equipamento</h3>
+                <p>itens contratados por equipamento</p>
+              </div>
+            </div>
+            <BarList
+              data={data!.equipamentos}
+              valueFmt={qtdFmt}
+              layout="stacked"
+              selected={equipamentoFiltro === "all" ? "" : equipamentoFiltro}
+              onSelect={(nome) => setEquipamentoFiltro((atual) => (atual === nome ? "all" : nome))}
+            />
+          </div>
+        )}
+
+        {(data?.tipos.length ?? 0) > 0 && (
+          <div className="panel">
+            <div className="panel-head">
+              <div>
+                <h3>Por tipo</h3>
+                <p>variação do item contratado</p>
+              </div>
+            </div>
+            <BarList data={data!.tipos} valueFmt={qtdFmt} />
+          </div>
+        )}
+
+        {/* Ocupa a linha inteira e distribui os status lado a lado: são quatro
+            valores curtos, que empilhados deixavam meia coluna vazia ao lado. */}
+        <div className="panel panel-largo">
           <div className="panel-head">
             <div>
               <h3>{t("operacional.status.title")}</h3>
@@ -516,21 +726,25 @@ export default function OperacionalPage() {
             </div>
           </div>
           {!data?.statusBreakdown.length ? (
-            <>
-              {(["pago", "pendente", "cancelado", "isento", "semDebito"] as const).map((s) => (
-                <div className="status-row" key={s}>
-                  <span className="status-left">
-                    <span className={`badge ${STATUS_CLASS[s]}`}>
-                      <span className="dot" />
-                      {STATUS_LABEL[s]}
-                    </span>
+            <div className="statusbars-row">
+              {(["pago", "pendente", "cancelado", "isento"] as const).map((s) => (
+                <div className="statusbars-cell" key={s}>
+                  <span className={`badge ${STATUS_CLASS[s]}`}>
+                    <span className="dot" />
+                    {STATUS_LABEL[s]}
                   </span>
-                  <span className="status-val">—</span>
+                  <strong className="statusbars-value">—</strong>
                 </div>
               ))}
-            </>
+            </div>
           ) : (
-            <StatusBars data={data.statusBreakdown} labels={STATUS_LABEL} classMap={STATUS_CLASS} colorMap={STATUS_COLOR} />
+            <StatusBars
+              data={data.statusBreakdown}
+              labels={STATUS_LABEL}
+              classMap={STATUS_CLASS}
+              colorMap={STATUS_COLOR}
+              layout="row"
+            />
           )}
         </div>
       </div>
@@ -541,13 +755,79 @@ export default function OperacionalPage() {
             <h3>{t("operacional.table.title")}</h3>
             <p>{t("operacional.table.desc")}</p>
           </div>
-          <div className="search" style={{ maxWidth: 260 }}>
+          <div className="table-tools">
+            <div className="search">
+              <input
+                type="text"
+                placeholder="Buscar expositor ou estande"
+                value={tableSearch}
+                onChange={(e) => setTableSearch(e.target.value)}
+              />
+            </div>
+
+            <span className="table-tools-sep">{t("col.dataInicio")}</span>
             <input
-              type="text"
-              placeholder="Buscar expositor ou estande"
-              value={tableSearch}
-              onChange={(e) => setTableSearch(e.target.value)}
+              type="date"
+              className="field"
+              value={tableRange.de}
+              max={tableRange.ate || undefined}
+              onChange={(e) => setTableRange((r) => ({ ...r, de: e.target.value }))}
+              aria-label="Data inicial"
             />
+            <span className="table-tools-sep">até</span>
+            <input
+              type="date"
+              className="field"
+              value={tableRange.ate}
+              min={tableRange.de || undefined}
+              onChange={(e) => setTableRange((r) => ({ ...r, ate: e.target.value }))}
+              aria-label="Data final"
+            />
+
+            <select
+              className="field"
+              value={tableStatus}
+              onChange={(e) => setTableStatus(e.target.value as "all" | ServicoStatus)}
+              aria-label="Status"
+            >
+              <option value="all">{t("common.allStatus")}</option>
+              {(["pago", "pendente", "cancelado", "isento"] as const).map((st) => (
+                <option key={st} value={st}>
+                  {STATUS_LABEL[st]}
+                </option>
+              ))}
+            </select>
+
+            {turnosDisponiveis.length > 0 && (
+              <select
+                className="field"
+                value={tableTurno}
+                onChange={(e) => setTableTurno(e.target.value)}
+                aria-label="Turno"
+              >
+                <option value="all">Todos os turnos</option>
+                {turnosDisponiveis.map((tu) => (
+                  <option key={tu} value={tu}>
+                    {tu}
+                  </option>
+                ))}
+              </select>
+            )}
+
+            {filtrosTabelaAtivos && (
+              <button
+                className="field field-btn"
+                type="button"
+                onClick={() => {
+                  setTableStatus("all");
+                  setTableTurno("all");
+                  setTableRange({ de: "", ate: "" });
+                  setTableSearch("");
+                }}
+              >
+                Limpar
+              </button>
+            )}
           </div>
         </div>
         <div className="table-scroll scroll-slim">
@@ -574,11 +854,17 @@ export default function OperacionalPage() {
               ) : !visiblePedidos.length ? (
                 <EmptyTableRow
                   colSpan={COLUMNS.length}
-                  title="nenhum pedido encontrado"
-                  desc={`nenhum resultado para "${tableSearch}"`}
+                  title="nenhum serviço encontrado"
+                  desc={
+                    tableSearch.trim()
+                      ? `nenhum resultado para "${tableSearch}" entre os ${data.pedidos.length.toLocaleString(
+                          "pt-BR"
+                        )} registros que passaram pelos filtros do topo`
+                      : "nenhum registro atende aos filtros da tabela"
+                  }
                 />
               ) : (
-                sortedPedidos.map((p, i) => (
+                linhasDaPagina.map((p, i) => (
                   // um mesmo expositor pede o mesmo serviço em linhas separadas
                   // (uma por variação, ex.: monolíngue e bilíngue), então não há
                   // identificador natural de linha — o índice garante a unicidade.
@@ -622,17 +908,35 @@ export default function OperacionalPage() {
           <span>
             {!visiblePedidos.length
               ? t("operacional.table.countZero")
-              : tableSearch.trim()
+              : filtrosTabelaAtivos
               ? `${visiblePedidos.length.toLocaleString("pt-BR")} de ${data!.pedidos.length.toLocaleString("pt-BR")} ${t("operacional.table.count")}`
               : `${visiblePedidos.length.toLocaleString("pt-BR")} ${t("operacional.table.count")}`}
           </span>
-          {tableSearch.trim() && visiblePedidos.length > 0 ? (
-            <span style={{ fontWeight: 700, color: "var(--ink)" }}>
-              Total: {visibleTotal.toLocaleString("pt-BR")} item(ns)
-            </span>
-          ) : (
-            <span>{t("common.page")}</span>
-          )}
+          <span className="pager">
+            {filtrosTabelaAtivos && visiblePedidos.length > 0 && (
+              <span style={{ fontWeight: 700, color: "var(--ink)" }}>
+                Total: {visibleTotal.toLocaleString("pt-BR")} item(ns)
+              </span>
+            )}
+            {totalPaginas > 1 && (
+              <>
+                <button className="field field-btn" type="button" disabled={paginaAtual <= 1} onClick={() => setPagina(paginaAtual - 1)}>
+                  ‹
+                </button>
+                <span>
+                  {paginaAtual} / {totalPaginas}
+                </span>
+                <button
+                  className="field field-btn"
+                  type="button"
+                  disabled={paginaAtual >= totalPaginas}
+                  onClick={() => setPagina(paginaAtual + 1)}
+                >
+                  ›
+                </button>
+              </>
+            )}
+          </span>
         </div>
       </div>
     </>

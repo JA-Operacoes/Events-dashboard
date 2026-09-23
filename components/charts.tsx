@@ -8,7 +8,7 @@ import { money, int } from "@/components/ui";
 // tema), as 10 últimas são as mesmas famílias em tom claro — então uma edição
 // com 8 serviços usa só matizes diferentes, e uma com 18 só repete família
 // quando já passou por todos. Acima de 20 o índice dá a volta.
-const PALETTE = [
+export const PALETTE = [
   "var(--accent)",
   "var(--blue)",
   "var(--amber)",
@@ -42,11 +42,24 @@ export function Donut({
   data,
   valueFmt = money,
   variant = "full",
+  onSelect,
+  selected,
+  colorFor,
 }: {
   data: Array<{ label: string; value: number }>;
   valueFmt?: (v: number) => string;
   /** "full": anel completo (padrão). "half": semicírculo (estilo "gauge"), pra quem prefere ler de relance. */
   variant?: "full" | "half";
+  /** Clique na fatia ou na legenda — usado para filtrar a tela por aquele item. */
+  onSelect?: (label: string) => void;
+  /** Item filtrado no momento: os demais ficam esmaecidos. */
+  selected?: string;
+  /**
+   * Cor fixa por rótulo. Sem isso a cor sai da posição na lista, e filtrar por
+   * um serviço fazia a fatia dele trocar de cor — o mesmo dado aparecia de
+   * duas cores conforme o filtro.
+   */
+  colorFor?: (label: string) => string | undefined;
 }) {
   const [hover, setHover] = useState<number | null>(null);
   const total = data.reduce((s, d) => s + d.value, 0);
@@ -61,17 +74,19 @@ export function Donut({
     // fica à esquerda e o último à direita, igual se lê um gauge.
     const cx = 72;
     const cy = 74;
-    let acc = 0;
+    // quanto vem antes de cada fatia, calculado de uma vez: mutar um
+    // acumulador dentro do map é o tipo de efeito que o compilador do React
+    // não consegue garantir entre renders
+    const antes = data.map((_, i) => data.slice(0, i).reduce((soma, d) => soma + d.value, 0));
     const arcs = data.map((d, i) => {
-      const a0 = 180 - (acc / total) * 180;
-      acc += d.value;
-      const a1 = 180 - (acc / total) * 180;
+      const a0 = 180 - (antes[i] / total) * 180;
+      const a1 = 180 - ((antes[i] + d.value) / total) * 180;
       const p0 = polar(cx, cy, R, a0);
       const p1 = polar(cx, cy, R, a1);
       return {
         ...d,
         i,
-        color: PALETTE[i % PALETTE.length],
+        color: colorFor?.(d.label) ?? PALETTE[i % PALETTE.length],
         path: `M ${p0.x.toFixed(2)} ${p0.y.toFixed(2)} A ${R} ${R} 0 0 1 ${p1.x.toFixed(2)} ${p1.y.toFixed(2)}`,
       };
     });
@@ -100,9 +115,14 @@ export function Donut({
               stroke={a.color}
               strokeWidth={hover === a.i ? 20 : STROKE}
               strokeLinecap="butt"
-              style={{ transition: "stroke-width .15s", cursor: "pointer" }}
+              style={{
+                transition: "stroke-width .15s, opacity .15s",
+                cursor: onSelect ? "pointer" : "default",
+                opacity: selected && selected !== a.label ? 0.3 : 1,
+              }}
               onPointerEnter={() => setHover(a.i)}
               onPointerLeave={() => setHover(null)}
+              onClick={onSelect ? () => onSelect(a.label) : undefined}
             />
           ))}
           <text x={cx} y={cy + 16} textAnchor="middle" fontSize="16" fontWeight="700" fill="var(--ink)">
@@ -112,11 +132,17 @@ export function Donut({
         <div className="donut-legend">
           {arcs.map((a) => (
             <div
-              className="status-row"
-              style={{ border: "none", padding: 0, opacity: hover === null || hover === a.i ? 1 : 0.45 }}
+              className={`status-row ${onSelect ? "donut-legend-clicavel" : ""} ${selected === a.label ? "on" : ""}`}
+              style={{
+                border: "none",
+                padding: 0,
+                opacity: hover === null || hover === a.i ? 1 : 0.45,
+                cursor: onSelect ? "pointer" : "default",
+              }}
               key={a.label}
               onPointerEnter={() => setHover(a.i)}
               onPointerLeave={() => setHover(null)}
+              onClick={onSelect ? () => onSelect(a.label) : undefined}
             >
               <span className="status-left">
                 <span className="legend-swatch" style={{ background: a.color, height: 8, width: 8, borderRadius: 2 }} />
@@ -133,13 +159,16 @@ export function Donut({
   }
 
   const C = 2 * Math.PI * R;
-  let offset = 0;
+  const antesDe = data.map((_, i) => data.slice(0, i).reduce((soma, d) => soma + d.value, 0));
   const arcs = data.map((d, i) => {
-    const frac = d.value / total;
-    const len = frac * C;
-    const arc = { ...d, i, dasharray: `${len} ${C - len}`, dashoffset: -offset, color: PALETTE[i % PALETTE.length] };
-    offset += len;
-    return arc;
+    const len = (d.value / total) * C;
+    return {
+      ...d,
+      i,
+      dasharray: `${len} ${C - len}`,
+      dashoffset: -(antesDe[i] / total) * C,
+      color: colorFor?.(d.label) ?? PALETTE[i % PALETTE.length],
+    };
   });
 
   return (
@@ -158,20 +187,33 @@ export function Donut({
             strokeDasharray={a.dasharray}
             strokeDashoffset={a.dashoffset}
             transform="rotate(-90 72 72)"
-            style={{ transition: "stroke-width .15s", cursor: "pointer" }}
+            style={{
+              transition: "stroke-width .15s, opacity .15s",
+              cursor: onSelect ? "pointer" : "default",
+              // o item filtrado fica opaco e o resto recua, para a fatia
+              // clicada continuar identificável depois do clique
+              opacity: selected && selected !== a.label ? 0.3 : 1,
+            }}
             onPointerEnter={() => setHover(a.i)}
             onPointerLeave={() => setHover(null)}
+            onClick={onSelect ? () => onSelect(a.label) : undefined}
           />
         ))}
       </svg>
       <div className="donut-legend">
         {arcs.map((a) => (
           <div
-            className="status-row"
-            style={{ border: "none", padding: 0, opacity: hover === null || hover === a.i ? 1 : 0.45 }}
+            className={`status-row ${onSelect ? "donut-legend-clicavel" : ""} ${selected === a.label ? "on" : ""}`}
+            style={{
+              border: "none",
+              padding: 0,
+              opacity: hover === null || hover === a.i ? 1 : 0.45,
+              cursor: onSelect ? "pointer" : "default",
+            }}
             key={a.label}
             onPointerEnter={() => setHover(a.i)}
             onPointerLeave={() => setHover(null)}
+            onClick={onSelect ? () => onSelect(a.label) : undefined}
           >
             <span className="status-left">
               <span className="legend-swatch" style={{ background: a.color, height: 8, width: 8, borderRadius: 2 }} />
@@ -258,6 +300,7 @@ export function StatusBars({
   labels,
   classMap,
   colorMap,
+  layout = "list",
 }: {
   data: Array<{ label: string; value: number }>;
   labels: Record<string, string>;
@@ -265,10 +308,37 @@ export function StatusBars({
   classMap?: Record<string, string>;
   /** sobrepõe a cor padrão da barrinha proporcional — útil quando o mesmo `label` tem semântica diferente entre módulos (ex.: "cancelado" é negativo no credenciamento, mas neutro no financeiro). */
   colorMap?: Record<string, string>;
+  /** "list": um status por linha (padrão). "row": os status lado a lado, para
+   *  quando são poucos e a leitura é de comparação, não de lista. */
+  layout?: "list" | "row";
 }) {
   const total = data.reduce((s, d) => s + d.value, 0) || 1;
+
+  if (layout === "row") {
+    return (
+      <div className="statusbars-row">
+        {data.map((d) => {
+          const cor = colorMap?.[d.label] ?? STATUS_COLOR[d.label] ?? "var(--accent)";
+          return (
+            <div className="statusbars-cell" key={d.label}>
+              <span className={`badge ${classMap?.[d.label] ?? d.label}`}>
+                <span className="dot" />
+                {labels[d.label] ?? d.label}
+              </span>
+              <strong className="statusbars-value">{d.value.toLocaleString("pt-BR")}</strong>
+              <span className="barlist-track">
+                <span className="barlist-fill" style={{ width: `${(d.value / total) * 100}%`, background: cor }} />
+              </span>
+              <span className="statusbars-pct">{((d.value / total) * 100).toFixed(1)}%</span>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
   return (
-    <div>
+    <div className="statusbars-list">
       {data.map((d) => (
         <div className="status-row" key={d.label}>
           <span className="status-left">
@@ -344,7 +414,7 @@ export function LineChart({
     : [];
 
   return (
-    <div style={{ position: "relative" }}>
+    <div className="chart-wrap">
       <svg
         width="100%"
         viewBox={`0 0 ${w} ${h}`}
@@ -453,7 +523,7 @@ export function GroupedBarChart({
   const hovered = hover ? data[hover.i] : null;
 
   return (
-    <div style={{ position: "relative" }}>
+    <div className="chart-wrap">
       <svg width="100%" viewBox={`0 0 ${w} ${h}`} role="img" aria-label="Comparativo por data">
         <line x1={pad.left} y1={h - pad.bottom} x2={w - pad.right} y2={h - pad.bottom} stroke="var(--baseline)" />
         {data.map((d, i) =>

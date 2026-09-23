@@ -27,6 +27,10 @@ export async function GET(req: NextRequest) {
     horaFim: r.horaFim,
     turno: r.turno,
     valor: r.valor,
+    kva: r.kva,
+    area: r.area,
+    equipamento: r.equipamento,
+    tipo: r.tipo,
     status: r.status as PedidoServico["status"],
     sourceFile: r.sourceFile,
   }));
@@ -43,6 +47,10 @@ export async function POST(req: NextRequest) {
   const editionId = String(body?.editionId ?? "");
   const sourceFile = String(body?.sourceFile ?? "");
   const pedidos: PedidoServico[] = Array.isArray(body?.pedidos) ? body.pedidos : [];
+  // "replace" (padrão) limpa as linhas anteriores do arquivo; "append" é o
+  // que os lotes seguintes usam para acrescentar sem apagar o que acabou de
+  // entrar. Ver lib/importClient.ts.
+  const modo = body?.modo === "append" ? "append" : "replace";
   if (!editionId || !sourceFile) {
     return NextResponse.json({ error: "editionId e sourceFile são obrigatórios" }, { status: 400 });
   }
@@ -50,35 +58,46 @@ export async function POST(req: NextRequest) {
   const auth = await requireEditionModule(req, editionId, "operacional");
   if (isResponse(auth)) return auth;
 
-  // reimportar o mesmo arquivo substitui só as linhas dele — nunca duplica,
-  // nunca mexe nas linhas de outro arquivo importado pra essa edição.
-  await prisma.$transaction([
-    prisma.importedServico.deleteMany({ where: { editionId, sourceFile } }),
-    prisma.importedServico.createMany({
-      data: pedidos.map((p) => ({
-        editionId,
-        sourceFile,
-        servico: p.servico,
-        expositor: p.expositor,
-        nomeFantasia: p.nomeFantasia,
-        cnpj: p.cnpj,
-        estande: p.estande,
-        localizacao: p.localizacao,
-        tipoEstande: p.tipoEstande,
-        quantidade: p.quantidade,
-        dias: p.dias,
-        dataInicio: p.dataInicio,
-        dataFim: p.dataFim,
-        horaInicio: p.horaInicio,
-        horaFim: p.horaFim,
-        turno: p.turno,
-        valor: p.valor ?? null,
-        status: p.status,
-      })),
-    }),
-  ]);
+  // Só o primeiro lote apaga o que existia deste arquivo — reimportar
+  // substitui, sem duplicar e sem tocar nas linhas de outros arquivos.
+  if (modo === "replace") {
+    await prisma.importedServico.deleteMany({ where: { editionId, sourceFile } });
+  }
 
-  return NextResponse.json({ ok: true, count: pedidos.length });
+  const registros = pedidos.map((p) => ({
+    editionId,
+    sourceFile,
+    servico: p.servico,
+    expositor: p.expositor,
+    nomeFantasia: p.nomeFantasia,
+    cnpj: p.cnpj,
+    estande: p.estande,
+    localizacao: p.localizacao,
+    tipoEstande: p.tipoEstande,
+    quantidade: p.quantidade,
+    dias: p.dias,
+    dataInicio: p.dataInicio,
+    dataFim: p.dataFim,
+    horaInicio: p.horaInicio,
+    horaFim: p.horaFim,
+    turno: p.turno,
+    valor: p.valor ?? null,
+    kva: p.kva ?? null,
+    area: p.area ?? null,
+    equipamento: p.equipamento ?? "",
+    tipo: p.tipo ?? "",
+    status: p.status,
+  }));
+
+  // Inserção fatiada: cada createMany é uma ida ao banco, então o tamanho é
+  // um meio-termo medido — 500 levava 16s para 10 mil linhas (21 chamadas),
+  // 3000 leva 5s (4 chamadas).
+  const TAMANHO = 3000;
+  for (let i = 0; i < registros.length; i += TAMANHO) {
+    await prisma.importedServico.createMany({ data: registros.slice(i, i + TAMANHO) });
+  }
+
+  return NextResponse.json({ ok: true, count: registros.length });
 }
 
 export async function DELETE(req: NextRequest) {

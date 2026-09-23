@@ -154,6 +154,24 @@ export default function Shell({ children }: { children: React.ReactNode }) {
     setNavOpen(false);
   }, [pathname]);
 
+  /**
+   * Sidebar recolhida: vira uma faixa de ícones e devolve ~170px de largura
+   * para os painéis. A escolha fica salva porque quem trabalha em tela
+   * pequena quer o painel recolhido sempre, não a cada visita.
+   */
+  const [railRecolhida, setRailRecolhida] = useState(false);
+  useEffect(() => {
+    setRailRecolhida(window.localStorage.getItem("dashboard.rail") === "recolhida");
+  }, []);
+
+  function alternarRail() {
+    setRailRecolhida((v) => {
+      const proxima = !v;
+      window.localStorage.setItem("dashboard.rail", proxima ? "recolhida" : "aberta");
+      return proxima;
+    });
+  }
+
   // Marca do evento: primária, secundária e cor de texto, aplicadas como
   // variáveis do tema — somem sozinhas ao trocar de evento e voltam ao padrão
   // quando o evento não define a cor.
@@ -223,14 +241,27 @@ export default function Shell({ children }: { children: React.ReactNode }) {
       </button>
       {navOpen && <div className="rail-backdrop" onClick={() => setNavOpen(false)} />}
       <div className="shell">
-        <aside className={`rail ${navOpen ? "rail-open" : ""}`}>
+        <aside className={`rail ${navOpen ? "rail-open" : ""} ${railRecolhida ? "rail-recolhida" : ""}`}>
+          {/* alinhado à direita da sidebar; com ela recolhida vai para o centro */}
+          <button
+            type="button"
+            className="rail-toggle"
+            onClick={alternarRail}
+            aria-label={railRecolhida ? "Expandir menu" : "Recolher menu"}
+            title={railRecolhida ? "Expandir menu" : "Recolher menu"}
+          >
+            {railRecolhida ? "›" : "‹"}
+          </button>
+
           {!hideBranding && (
             <div className="rail-brand">
               {event?.logoUrl ? (
-                <Logo width={176} src={event.logoUrl} />
+                /* recolhida, a logo do evento vira uma marca de 34px — o
+                   tamanho é inline no componente, então vem daqui */
+                <Logo width={railRecolhida ? 34 : 176} src={event.logoUrl} />
               ) : (
                 <>
-                  <Logo size={30} />
+                  <Logo size={railRecolhida ? 26 : 30} />
                   <div>
                     <strong>{t("shell.brand.title")}</strong>
                     <span>{t("shell.brand.subtitle")}</span>
@@ -248,11 +279,12 @@ export default function Shell({ children }: { children: React.ReactNode }) {
                 key={item.href}
                 href={item.href}
                 className={`rail-link ${pathname === item.href ? "active" : ""}`}
+                title={railRecolhida ? item.label : undefined}
               >
                 <span className="ic">
                   <item.Icon size={15} />
                 </span>{" "}
-                {item.label}
+                <span className="rail-label">{item.label}</span>
               </Link>
             ))}
           </nav>
@@ -267,11 +299,12 @@ export default function Shell({ children }: { children: React.ReactNode }) {
                   key={item.href}
                   href={item.href}
                   className={`rail-link ${pathname === item.href ? "active" : ""}`}
+                  title={railRecolhida ? item.label : undefined}
                 >
                   <span className="ic">
                     <item.Icon size={15} />
                   </span>{" "}
-                  {item.label}
+                  <span className="rail-label">{item.label}</span>
                 </Link>
               ))}
             </nav>

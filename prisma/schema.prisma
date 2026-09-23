@@ -125,6 +125,10 @@ model ImportedInvoice {
   /// Quantos ingressos a duplicata representa (planilhas de ingresso). Nulo
   /// quando a planilha não tem a coluna — nesse caso vale 1 na contagem.
   quantidade Int?
+  /// Campos que só a planilha de ingresso traz (comparecimento, convite,
+  /// cargo, segmento, estado...). Guardados como JSON porque não existem em
+  /// contas a receber e só alimentam os painéis do recorte de ingressos.
+  ingresso   Json?
   /// Rateio de contas/centro de custo — opcionais, algumas planilhas de ERP trazem até 4 por duplicata.
   centroCusto String?
   conta1     String?
@@ -193,6 +197,14 @@ model ImportedServico {
   /// Valor total da linha quando a planilha traz preço (já multiplicado pela
   /// quantidade se a coluna for unitária). Nulo quando não há valor na origem.
   valor        Float?
+  /// Potência elétrica contratada (kVA) — só o relatório de elétrica traz.
+  kva          Float?
+  /// Área do estande em m², quando a planilha informa.
+  area         Float?
+  /// Item contratado dentro do serviço ("Câmera de Monitoramento").
+  equipamento  String   @default("")
+  /// Variação do item ("220V", "Bilíngue") — cada serviço chama de um jeito.
+  tipo         String   @default("")
   status       String
   createdAt    DateTime @default(now())
 

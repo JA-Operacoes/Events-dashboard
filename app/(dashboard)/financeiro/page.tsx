@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useEvent } from "@/lib/eventContext";
 import { useI18n } from "@/lib/i18n";
 import { useAuth } from "@/lib/auth";
@@ -9,21 +9,120 @@ import {
   type FinanceiroData,
   type FinanceiroFilters,
   type Invoice,
+  type InvoiceStatus,
   type OrigemReceita,
 } from "@/lib/dataSource";
-import { ConnChip, Empty, EmptyTableRow, KpiRow, money, int } from "@/components/ui";
+import { ConnChip, Empty, EmptyTableRow, KpiRow, money, int, pct } from "@/components/ui";
 import { SpreadsheetImportFinanceiro } from "@/components/SpreadsheetImport";
 import { aggregateFinanceiro, mergeImportedInvoices, classificarOrigem } from "@/lib/spreadsheetImport";
 import { Donut, BarList, StatusBars, LineChart } from "@/components/charts";
 import { getCached, setCached } from "@/lib/pageCache";
+import { combina } from "@/lib/busca";
+import { enviarImportEmLotes } from "@/lib/importClient";
 import { matchesPeriod, normalizePaymentMethod, formatRelativeTime } from "@/lib/period";
 import { notifySuccess, notifyWarning, notifyError } from "@/lib/swal";
+
+/** Cartões do recorte de ingressos: os do financeiro mais os dois próprios dele. */
+type KpisIngresso = FinanceiroData["kpis"] & { taxaComparecimento: number | null; valorEmAberto: number | null };
+
+/** Quantos itens o ranking mostra antes de pedir "ver todos". */
+const RANKING_VISIVEL = 8;
+
+type AbaRanking = {
+  id: string;
+  /** rótulo do botão quando o card tem mais de uma leitura */
+  aba?: string;
+  desc: string;
+  layout?: "row" | "stacked";
+  /** uma lista só… */
+  dados?: Array<{ name: string; value: number }>;
+  /** …ou várias, empilhadas com subtítulo (é o que a opção "Ambos" usa) */
+  grupos?: Array<{ titulo: string; dados: Array<{ name: string; value: number }> }>;
+};
+
+/**
+ * Ranking do recorte de ingressos. Mostra o topo e abre a lista inteira sob
+ * demanda — cargo e segmento passam de mil valores distintos no relatório, e
+ * sem isso o 9º colocado nunca apareceria.
+ *
+ * Aceita mais de uma leitura no mesmo card (estado, país, ou os dois juntos):
+ * são a mesma pergunta em recortes diferentes e não precisam de painéis
+ * separados disputando espaço.
+ */
+function PainelRanking({ titulo, abas }: { titulo: string; abas: AbaRanking[] }) {
+  const [verTodos, setVerTodos] = useState(false);
+  const [abaAtiva, setAbaAtiva] = useState(0);
+
+  const tamanho = (a: AbaRanking) =>
+    a.grupos ? a.grupos.reduce((acc, g) => acc + g.dados.length, 0) : a.dados?.length ?? 0;
+
+  const disponiveis = abas.filter((a) => tamanho(a) > 0);
+  if (!disponiveis.length) return null;
+
+  const atual = disponiveis[Math.min(abaAtiva, disponiveis.length - 1)];
+  const grupos = atual.grupos ?? [{ titulo: "", dados: atual.dados ?? [] }];
+  const maiorGrupo = Math.max(...grupos.map((g) => g.dados.length));
+
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <div>
+          <h3>{titulo}</h3>
+          <p>{atual.desc}</p>
+        </div>
+        <div className="panel-head-tools">
+          {disponiveis.length > 1 && (
+            <div className="seg">
+              {disponiveis.map((a, i) => (
+                <button
+                  key={a.id}
+                  type="button"
+                  className={atual.id === a.id ? "on" : ""}
+                  onClick={() => {
+                    setAbaAtiva(i);
+                    setVerTodos(false); // a outra leitura tem outro tamanho de lista
+                  }}
+                >
+                  {a.aba ?? a.id}
+                </button>
+              ))}
+            </div>
+          )}
+          {maiorGrupo > RANKING_VISIVEL && (
+            <button className="field field-btn" type="button" onClick={() => setVerTodos((v) => !v)}>
+              {verTodos ? "Ver menos" : "Ver todos (" + tamanho(atual).toLocaleString("pt-BR") + ")"}
+            </button>
+          )}
+        </div>
+      </div>
+      {/* fechado, a lista se distribui pela altura do card; aberto, ela rola
+          dentro do mesmo card em vez de esticá-lo */}
+      <div className={`ranking-lista ${verTodos ? "barlist-scroll scroll-slim" : ""}`}>
+        {grupos.map((g) => (
+          <div className="ranking-grupo" key={g.titulo || atual.id}>
+            {g.titulo && <span className="section-label">{g.titulo}</span>}
+            <BarList
+              data={verTodos ? g.dados : g.dados.slice(0, RANKING_VISIVEL)}
+              valueFmt={(v) => v.toLocaleString("pt-BR")}
+              layout={atual.layout ?? "row"}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export default function FinanceiroPage() {
   const { eventId, editionId, event, edition } = useEvent();
   const { t } = useI18n();
   const { canManageData } = useAuth();
   const [period, setPeriod] = useState<FinanceiroFilters["period"]>("all");
+  // Dia do evento (recorte de ingressos): "todos" ou uma das datas de
+  // comparecimento. Vale para os cartões e todos os painéis da seção.
+  const [diaEvento, setDiaEvento] = useState<string>("todos");
+  // intervalo do filtro "Personalizado" — vazio até o usuário escolher as duas pontas
+  const [customRange, setCustomRange] = useState({ de: "", ate: "" });
   // recorte por origem da receita: expositor, ingresso ou a visão geral com
   // as duas somadas. Vem da coluna "Origem" da planilha.
   const [origem, setOrigem] = useState<FinanceiroFilters["origem"]>("all");
@@ -36,6 +135,13 @@ export default function FinanceiroPage() {
   // busca específica da tabela de duplicatas — filtra só a lista abaixo, sem
   // recalcular KPIs/gráficos (diferente da busca geral, que filtra tudo).
   const [tableSearch, setTableSearch] = useState("");
+  // Filtros da própria tabela: afinam a lista sem recalcular KPIs e gráficos,
+  // que continuam respondendo só aos filtros do topo. É o que permite olhar o
+  // detalhe (uma forma de pagamento, um intervalo de vencimento) sem perder a
+  // referência do total.
+  const [tableRange, setTableRange] = useState({ de: "", ate: "" });
+  const [tableStatus, setTableStatus] = useState<"all" | InvoiceStatus>("all");
+  const [tableForma, setTableForma] = useState("all");
   const [connState, setConnState] = useState<"pending" | "connected" | "error">("pending");
   const [apiData, setApiData] = useState<FinanceiroData | null>(null);
   // quando veio a última atualização de dados (import de planilha) — é o que
@@ -66,30 +172,58 @@ export default function FinanceiroPage() {
     [rawInvoices]
   );
 
-  const filteredInvoices = useMemo(() => {
-    const term = search.trim().toLowerCase();
-    return rawInvoices.filter((inv) => {
-      if (statusFilter !== "all" && inv.status !== statusFilter) return false;
-      if (origem !== "all" && (inv.origemTipo ?? classificarOrigem(inv.origem)) !== origem) return false;
-      if (method !== "all" && normalizePaymentMethod(inv.forma) !== method) return false;
-      if (
-        contaFilter !== "all" &&
-        inv.centroCusto !== contaFilter &&
-        inv.conta1 !== contaFilter &&
-        inv.conta2 !== contaFilter &&
-        inv.conta3 !== contaFilter
-      )
-        return false;
-      if (!matchesPeriod(inv.vencimento, period)) return false;
-      if (term) {
-        const haystack = `${inv.cliente} ${inv.cnpj} ${inv.numero}`.toLowerCase();
-        if (!haystack.includes(term)) return false;
-      }
-      return true;
-    });
-  }, [rawInvoices, statusFilter, origem, method, contaFilter, period, search]);
+  // Um filtro só, com o recorte por dia opcional: o painel que compara os
+  // dias entre si precisa de todos eles mesmo quando um dia está selecionado.
+  const aplicarFiltros = useCallback(
+    (lista: Invoice[], comDia: boolean) => {
+      const term = search.trim();
+      return lista.filter((inv) => {
+        if (statusFilter !== "all" && inv.status !== statusFilter) return false;
+        if (origem !== "all" && (inv.origemTipo ?? classificarOrigem(inv.origem)) !== origem) return false;
+        if (method !== "all" && normalizePaymentMethod(inv.forma) !== method) return false;
+        if (
+          contaFilter !== "all" &&
+          inv.centroCusto !== contaFilter &&
+          inv.conta1 !== contaFilter &&
+          inv.conta2 !== contaFilter &&
+          inv.conta3 !== contaFilter
+        )
+          return false;
+        // o recorte de período usa a data de pagamento: é a única data de fato
+      // comparável depois que o vencimento saiu do painel
+      if (!matchesPeriod(inv.pagamento, period, customRange)) return false;
+        if (term && !combina(term, [inv.cliente, inv.cnpj, inv.numero, inv.origem])) return false;
+        if (comDia && diaEvento !== "todos" && inv.ingresso?.dataComparecimento?.trim() !== diaEvento) return false;
+        return true;
+      });
+    },
+    [statusFilter, origem, method, contaFilter, period, customRange, search, diaEvento]
+  );
 
-  const data = apiData || hasImported ? aggregateFinanceiro(filteredInvoices) : null;
+  const filteredInvoices = useMemo(() => aplicarFiltros(rawInvoices, true), [rawInvoices, aplicarFiltros]);
+
+  /**
+   * Público por dia calculado sem o recorte de dia. Com o filtro aplicado,
+   * este painel virava uma barra só — justamente o gráfico cujo trabalho é
+   * comparar um dia com os outros.
+   */
+  const publicoPorDia = useMemo(() => {
+    const porDia = new Map<string, number>();
+    for (const inv of aplicarFiltros(rawInvoices, false)) {
+      const d = inv.ingresso?.dataComparecimento?.trim();
+      if (d) porDia.set(d, (porDia.get(d) ?? 0) + 1);
+    }
+    return Array.from(porDia, ([name, value]) => ({ name, value })).sort(
+      (a, b) => parseDateLoose(a.name) - parseDateLoose(b.name)
+    );
+  }, [rawInvoices, aplicarFiltros]);
+
+  // Sem memo, esta conta (25ms com 10 mil duplicatas) rodava a cada render —
+  // inclusive a cada tecla digitada na busca, que é o que travava a tela.
+  const data = useMemo(
+    () => (apiData || hasImported ? aggregateFinanceiro(filteredInvoices) : null),
+    [apiData, hasImported, filteredInvoices]
+  );
 
   // A barra de origem é calculada sobre TODAS as duplicatas, não sobre o
   // resultado filtrado: senão, ao escolher "Expositor", as outras abas
@@ -118,18 +252,55 @@ export default function FinanceiroPage() {
   // desabilitadas. Esconder as vazias fazia a barra inteira sumir quando a
   // planilha não trazia a coluna "Origem", e não havia como saber que o
   // recorte existe nem por que ele não apareceu.
-  const ORIGEM_TABS = ["all", "expositor", "portaria", "ingresso"] as const;
+  const ORIGEM_TABS = ["all", "expositor", "ingresso"] as const;
+
+  // formas de pagamento que realmente aparecem nos dados carregados — lista
+  // fixa deixaria opções que nunca filtram nada.
+  const formasDisponiveis = useMemo(
+    () =>
+      Array.from(new Set((data?.invoices ?? []).map((inv) => inv.forma).filter(Boolean))).sort((a, b) =>
+        a.localeCompare(b, "pt-BR")
+      ),
+    [data]
+  );
 
   const visibleInvoices = useMemo(() => {
-    const term = tableSearch.trim().toLowerCase();
-    const list = data?.invoices ?? [];
-    if (!term) return list;
-    return list.filter((inv) => `${inv.cliente} ${inv.numero}`.toLowerCase().includes(term));
-  }, [data, tableSearch]);
+    const term = tableSearch.trim();
+    return (data?.invoices ?? []).filter((inv) => {
+      if (tableStatus !== "all" && inv.status !== tableStatus) return false;
+      if (tableForma !== "all" && inv.forma !== tableForma) return false;
+      if (tableRange.de || tableRange.ate) {
+        // "custom" com as duas pontas vazias não filtra; aqui uma ponta só já
+        // vale como limite aberto, porque o intervalo é do próprio usuário.
+        const alvo = inv.pagamento;
+        const t = parseDateLoose(alvo);
+        if (Number.isNaN(t)) return false;
+        if (tableRange.de) {
+          const de = parseDateLoose(tableRange.de);
+          if (!Number.isNaN(de) && t < de) return false;
+        }
+        if (tableRange.ate) {
+          const ate = parseDateLoose(tableRange.ate) + 24 * 60 * 60 * 1000 - 1;
+          if (!Number.isNaN(ate) && t > ate) return false;
+        }
+      }
+      if (term && !combina(term, [inv.cliente, inv.numero, inv.cnpj, inv.forma])) return false;
+      return true;
+    });
+  }, [data, tableSearch, tableStatus, tableForma, tableRange]);
+
+  const filtrosTabelaAtivos =
+    tableStatus !== "all" || tableForma !== "all" || !!tableRange.de || !!tableRange.ate || !!tableSearch.trim();
 
   // total só faz sentido quando a busca recorta pra um cliente/duplicata
   // específico — na visão geral (sem busca) fica sem essa soma na tela.
   const visibleTotal = useMemo(() => visibleInvoices.reduce((s, inv) => s + inv.valor, 0), [visibleInvoices]);
+
+  // A tabela mostra uma página por vez: renderizar 10 mil linhas de uma vez
+  // enche o DOM de células e deixa toda a página lenta, mesmo com os dados já
+  // carregados. Os KPIs e gráficos continuam somando a lista inteira.
+  const LINHAS_POR_PAGINA = 100;
+  const [pagina, setPagina] = useState(1);
 
   const [sortKey, setSortKey] = useState<keyof Invoice | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
@@ -156,7 +327,7 @@ export default function FinanceiroPage() {
   const sortedInvoices = useMemo(() => {
     if (!sortKey) return visibleInvoices;
     const dir = sortDir === "asc" ? 1 : -1;
-    const isDateCol = sortKey === "vencimento" || sortKey === "pagamento";
+    const isDateCol = sortKey === "pagamento";
     return [...visibleInvoices].sort((a, b) => {
       if (sortKey === "valor") return (a.valor - b.valor) * dir;
       if (isDateCol) {
@@ -170,6 +341,45 @@ export default function FinanceiroPage() {
       return String(a[sortKey] ?? "").localeCompare(String(b[sortKey] ?? ""), "pt-BR") * dir;
     });
   }, [visibleInvoices, sortKey, sortDir]);
+
+  const totalPaginas = Math.max(1, Math.ceil(visibleInvoices.length / LINHAS_POR_PAGINA));
+
+  // Filtro novo devolve uma lista nova: continuar na página anterior mostraria
+  // o meio do resultado e passava a impressão de que a busca não encontrou nada.
+  const assinaturaFiltros = `${tableSearch}|${tableStatus}|${tableForma}|${tableRange.de}|${tableRange.ate}|${search}|${statusFilter}|${origem}|${method}|${period}|${contaFilter}`;
+  const [filtrosAnteriores, setFiltrosAnteriores] = useState(assinaturaFiltros);
+  if (filtrosAnteriores !== assinaturaFiltros) {
+    // ajuste de estado durante o render, como o React recomenda para estado
+    // derivado: mais direto que um efeito, e sem o render intermediário
+    setFiltrosAnteriores(assinaturaFiltros);
+    setPagina(1);
+  }
+  // filtro novo pode encolher a lista: sem o clamp, a tela ficaria numa página
+  // que não existe mais e pareceria vazia.
+  const paginaAtual = Math.min(pagina, totalPaginas);
+  const linhasDaPagina = useMemo(
+    () => sortedInvoices.slice((paginaAtual - 1) * LINHAS_POR_PAGINA, paginaAtual * LINHAS_POR_PAGINA),
+    [sortedInvoices, paginaAtual]
+  );
+
+  /**
+   * Colunas da tabela. Sem vencimento: quando a duplicata vence o ERP gera
+   * outra no lugar, então a data antiga não descreve mais a cobrança em aberto
+   * — a única data com significado aqui é a do pagamento.
+   */
+  const COLUNAS_TABELA = useMemo(() => {
+    const defs: Array<{ key: keyof Invoice; label: string; cls: string }> = [
+      { key: "numero", label: t("col.numero"), cls: "" },
+      { key: "cliente", label: t("col.cliente"), cls: "" },
+      { key: "cnpj", label: t("col.documento"), cls: "" },
+      { key: "pagamento", label: t("col.pagamento"), cls: "" },
+      { key: "forma", label: t("col.forma"), cls: "" },
+      { key: "valor", label: t("col.valor"), cls: "num" },
+      { key: "status", label: t("col.status"), cls: "" },
+    ];
+    return defs;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const importedFiles = Array.from(
     importedInvoices.reduce((map, inv) => {
@@ -198,23 +408,24 @@ export default function FinanceiroPage() {
       notifyWarning("Selecione uma edição primeiro", "Escolha (ou crie) uma edição do evento antes de importar a planilha — sem isso não há onde salvar os dados.");
       return;
     }
-    // otimista: mostra na hora, e persiste em paralelo — se falhar, recarrega do banco pra não ficar dessincronizado.
-    setImportedInvoices((prev) => {
-      const next = mergeImportedInvoices(prev, invoices, fileName);
-      setCached(`financeiro:${editionId}`, next);
-      return next;
-    });
-    const res = await fetch("/api/financeiro/import", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ editionId, sourceFile: fileName, invoices }),
-    });
-    if (!res.ok) {
+    // otimista: mostra na hora e persiste em seguida. O cache é atualizado
+    // fora do updater — efeito colateral ali dentro roda duas vezes em modo
+    // de desenvolvimento e gravava o valor errado.
+    const proximo = mergeImportedInvoices(importedInvoices, invoices, fileName);
+    setImportedInvoices(proximo);
+    setCached(`financeiro:${editionId}`, proximo);
+
+    const r = await enviarImportEmLotes("/api/financeiro/import", editionId, fileName, "invoices", invoices);
+    if (!r.ok) {
+      // sem isto a tela seguiria mostrando dados que não foram gravados, e
+      // tudo sumiria no próximo refresh
       loadImported();
-      notifyError("Falha ao importar planilha", "Os dados não foram salvos — tente novamente em instantes.");
+      notifyError("Falha ao importar planilha", r.erro);
       return;
     }
-    notifySuccess("Planilha importada", `${invoices.length} linha(s) de "${fileName}" foram salvas.`);
+    notifySuccess("Planilha importada", `${invoices.length.toLocaleString("pt-BR")} linha(s) de "${fileName}" foram salvas.`);
+    // relê do banco: é o que garante que a tela mostra o que foi realmente gravado
+    loadImported();
   }
 
   async function removeImportedFile(fileName: string) {
@@ -231,50 +442,92 @@ export default function FinanceiroPage() {
   }
 
   // No recorte de ingresso, ticket médio e nº de duplicatas dizem pouco: o que
-  // interessa é quantos ingressos saíram e quanto cada comprador leva. A
-  // pontualidade continua valendo nos dois casos.
+  // interessa é quanto entrou e quantos ingressos saíram.
+  const ing = origem === "ingresso" ? data?.ingressoStats ?? null : null;
+
+  // Dias do evento com movimento registrado. Saem das duplicatas cruas (e não
+  // do resultado já filtrado) para os botões não sumirem conforme o usuário
+  // escolhe um dia.
+  const diasDoEvento = useMemo(() => {
+    const dias = new Set<string>();
+    for (const inv of rawInvoices) {
+      const d = inv.ingresso?.dataComparecimento?.trim();
+      if (d) dias.add(d);
+    }
+    return Array.from(dias).sort((a, b) => parseDateLoose(a) - parseDateLoose(b));
+  }, [rawInvoices]);
+  /**
+   * Em "Todos", a curva única soma os dias e esconde justamente o que
+   * interessa: em qual dia e em qual hora deu fila. Esta matriz mostra cada
+   * dia numa linha, com uma barra por hora — dá para comparar os dias na
+   * vertical e as horas na horizontal de uma vez.
+   */
+  const matrizFluxo = useMemo(() => {
+    const linhas = ing?.comparecimentoPorHora ?? [];
+    if (!linhas.length) return null;
+
+    const horas = Array.from(new Set(linhas.map((l) => l.hora))).sort((a, b) => a - b);
+    const dias = Array.from(new Set(linhas.map((l) => l.dia)));
+    const porDia = dias.map((dia) => {
+      const doDia = linhas.filter((l) => l.dia === dia);
+      const valores = horas.map((h) => doDia.find((l) => l.hora === h)?.pessoas ?? 0);
+      const total = valores.reduce((acc, v) => acc + v, 0);
+      const picoValor = Math.max(...valores);
+      return { dia, valores, total, picoHora: horas[valores.indexOf(picoValor)], picoValor };
+    });
+    // a escala é comum a todos os dias: uma barra só é maior que a outra se o
+    // movimento foi maior mesmo, e não porque o dia teve menos gente no total
+    const maximo = Math.max(...porDia.flatMap((d) => d.valores), 1);
+    return { horas, porDia, maximo };
+  }, [ing]);
+
+  /**
+   * Cartões do recorte de ingressos, numa linha só.
+   *
+   * O valor em aberto aparece em "Todos" (onde é a informação que falta) e
+   * substitui o total recebido quando o filtro é "Em aberto" — ali o recebido
+   * é sempre zero por definição, e quem filtrou por em aberto quer ver quanto
+   * falta entrar. Nos demais status ele sai de cena.
+   */
   const KPI_DEFS_INGRESSO = [
-    { key: "totalRecebido", label: t("financeiro.kpi.total"), fmt: money },
-    { key: "qtdIngressos", label: t("financeiro.kpi.ingressos"), fmt: int },
-    {
-      key: "mediaPorComprador",
-      label: t("financeiro.kpi.mediaComprador"),
-      fmt: (v: number | null) => (v == null ? "—" : v.toLocaleString("pt-BR", { maximumFractionDigits: 1 })),
-    },
-    {
-      key: "pontualidadeDias",
-      label: t("financeiro.kpi.pontualidade"),
-      fmt: (v: number | null) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(1)} d`),
-    },
-  ] as const;
+    statusFilter === "pendente"
+      ? { key: "valorEmAberto" as const, label: t("financeiro.kpi.emAberto"), fmt: money }
+      : { key: "totalRecebido" as const, label: t("financeiro.kpi.total"), fmt: money },
+    { key: "qtdIngressos" as const, label: t("financeiro.kpi.ingressos"), fmt: int },
+    { key: "taxaComparecimento" as const, label: t("financeiro.kpi.comparecimento"), fmt: pct },
+    ...(statusFilter === "all"
+      ? [{ key: "valorEmAberto" as const, label: t("financeiro.kpi.emAberto"), fmt: money }]
+      : []),
+  ];
+
+  // tipo explícito: os dois campos de ingresso não existem em FinanceiroData["kpis"],
+  // e sem isso o KpiRow infere o tipo do objeto base e recusa as chaves novas
+  const valoresIngresso: KpisIngresso | null = data
+    ? { ...data.kpis, taxaComparecimento: ing?.taxaComparecimento ?? null, valorEmAberto: ing?.valorEmAberto ?? null }
+    : null;
 
 
   const KPI_DEFS_PADRAO = [
     { key: "totalRecebido", label: t("financeiro.kpi.total"), fmt: money },
     { key: "ticketMedio", label: t("financeiro.kpi.ticket"), fmt: money },
     { key: "qtdDuplicatas", label: t("financeiro.kpi.duplicatas"), fmt: int },
-    {
-      key: "pontualidadeDias",
-      label: t("financeiro.kpi.pontualidade"),
-      fmt: (v: number | null) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(1)} d`),
-    },
   ] as const;
 
-  const KPI_DEFS = origem === "ingresso" ? KPI_DEFS_INGRESSO : KPI_DEFS_PADRAO;
 
   const ORIGEM_LABEL: Record<string, string> = {
     all: t("financeiro.origem.all"),
     expositor: t("financeiro.origem.expositor"),
-    portaria: t("financeiro.origem.portaria"),
     ingresso: t("financeiro.origem.ingresso"),
   };
 
   const STATUS_LABEL: Record<string, string> = {
     pago: t("status.pago"),
     pendente: t("status.pendente"),
-    atrasado: t("status.atrasado"),
+    cortesia: t("status.cortesia"),
     cancelado: t("status.cancelado"),
   };
+  // cortesia usa a cor neutra do tema: não é receita nem cobrança em aberto
+  const STATUS_CLASS: Record<string, string> = { cortesia: "cancelado" };
 
   async function load() {
     setConnState("pending");
@@ -392,18 +645,247 @@ export default function FinanceiroPage() {
           ))}
         </div>
         <div className="seg">
-          {(["all", "pago", "pendente", "atrasado", "cancelado"] as const).map((v) => (
+          {(["all", "pago", "pendente", "cortesia", "cancelado"] as const).map((v) => (
             <button key={v} className={statusFilter === v ? "on" : ""} onClick={() => setStatusFilter(v)}>
               {v === "all" ? t("common.allStatus") : STATUS_LABEL[v]}
             </button>
           ))}
         </div>
+        {period === "custom" && (
+          <div className="date-range">
+            <input
+              type="date"
+              className="input"
+              value={customRange.de}
+              max={customRange.ate || undefined}
+              onChange={(e) => setCustomRange((r) => ({ ...r, de: e.target.value }))}
+              aria-label="Data inicial"
+            />
+            <span>até</span>
+            <input
+              type="date"
+              className="input"
+              value={customRange.ate}
+              min={customRange.de || undefined}
+              onChange={(e) => setCustomRange((r) => ({ ...r, ate: e.target.value }))}
+              aria-label="Data final"
+            />
+            {(customRange.de || customRange.ate) && (
+              <button className="btn" type="button" onClick={() => setCustomRange({ de: "", ate: "" })}>
+                Limpar
+              </button>
+            )}
+          </div>
+        )}
         <div className="search">
           <input type="text" placeholder={t("financeiro.search")} value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
       </div>
 
-      <KpiRow defs={KPI_DEFS} values={data?.kpis} />
+      {ing ? (
+        <KpiRow<KpisIngresso> defs={KPI_DEFS_INGRESSO} values={valoresIngresso} />
+      ) : (
+        <KpiRow defs={KPI_DEFS_PADRAO} values={data?.kpis} />
+      )}
+
+      {ing && diasDoEvento.length > 0 && (
+        <div className="segbar" style={{ marginBottom: 12 }}>
+          <div className="seg">
+            <button className={diaEvento === "todos" ? "on" : ""} type="button" onClick={() => setDiaEvento("todos")}>
+              Todos
+            </button>
+            {diasDoEvento.map((d) => (
+              <button key={d} className={diaEvento === d ? "on" : ""} type="button" onClick={() => setDiaEvento(d)}>
+                {d.slice(0, 5)}
+              </button>
+            ))}
+          </div>
+          <span style={{ fontSize: 11.5, color: "var(--ink-mute)", alignSelf: "center" }}>
+            {diaEvento === "todos"
+              ? "dia do evento — recorta cartões, painéis e tabela"
+              : `mostrando só quem passou no credenciamento em ${diaEvento}`}
+          </span>
+        </div>
+      )}
+
+      {ing && (
+        <>
+          <div className="panels panels-ingresso">
+            <div className="panel">
+              <div className="panel-head">
+                <div>
+                  <h3>Comparecimento por situação de pagamento</h3>
+                  <p>quem pagou aparece mais do que quem ganhou cortesia?</p>
+                </div>
+              </div>
+              {!ing.comparecimentoPorStatus.length ? (
+                <Empty
+                  glyph="⌸"
+                  title="sem dado de comparecimento"
+                  desc="mapeie a coluna 'Compareceu' no import para ver esta leitura"
+                />
+              ) : (
+                <div className="statusbars-row">
+                  {ing.comparecimentoPorStatus.map((c) => {
+                    const total = c.compareceu + c.faltou;
+                    const taxa = total ? (c.compareceu / total) * 100 : 0;
+                    return (
+                      <div className="statusbars-cell" key={c.status}>
+                        <span className={`badge ${STATUS_CLASS[c.status] ?? c.status}`}>
+                          <span className="dot" />
+                          {STATUS_LABEL[c.status] ?? c.status}
+                        </span>
+                        <strong className="statusbars-value">{taxa.toFixed(1)}%</strong>
+                        <span className="barlist-track">
+                          <span className="barlist-fill" style={{ width: `${taxa}%`, background: "var(--good)" }} />
+                        </span>
+                        <span className="statusbars-pct">
+                          {c.compareceu.toLocaleString("pt-BR")} vieram · {c.faltou.toLocaleString("pt-BR")} faltaram
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {publicoPorDia.length > 0 && (
+              <div className="panel">
+                <div className="panel-head">
+                  <div>
+                    <h3>Público por dia do evento</h3>
+                    <p>
+                      {diaEvento === "todos"
+                        ? "quantos passaram pelo credenciamento em cada dia"
+                        : "todos os dias, para comparar com o selecionado"}
+                    </p>
+                  </div>
+                </div>
+                {/* em ordem de data, não de volume: a leitura aqui é a
+                    sequência dos dias do evento. Clicar no dia recorta a seção. */}
+                <BarList
+                  data={publicoPorDia}
+                  valueFmt={(v) => v.toLocaleString("pt-BR")}
+                  selected={diaEvento === "todos" ? "" : diaEvento}
+                  onSelect={(nome) => setDiaEvento((atual) => (atual === nome ? "todos" : nome))}
+                />
+              </div>
+            )}
+
+            {ing.comparecimentoPorHora.length > 0 && (
+              <div className="panel panel-largo">
+                <div className="panel-head">
+                  <div>
+                    <h3>Fluxo de credenciamento</h3>
+                    <p>
+                      {diaEvento === "todos"
+                        ? "cada dia numa linha, uma barra por hora — clique no dia para recortar a seção"
+                        : `pessoas por hora em ${diaEvento}`}
+                    </p>
+                  </div>
+                </div>
+                {matrizFluxo ? (
+                  <div
+                    className={`fluxo-matriz scroll-slim ${matrizFluxo.porDia.length === 1 ? "fluxo-matriz-dia" : ""}`}
+                    style={{ ["--horas" as string]: matrizFluxo.horas.length }}
+                  >
+                    <div className="fluxo-linha fluxo-cabecalho">
+                      <span className="fluxo-dia" />
+                      {matrizFluxo.horas.map((h) => (
+                        <span className="fluxo-hora-rotulo" key={h}>
+                          {String(h).padStart(2, "0")}
+                        </span>
+                      ))}
+                      <span className="fluxo-total">total</span>
+                    </div>
+                    {matrizFluxo.porDia.map((d) => (
+                      <div className="fluxo-linha" key={d.dia}>
+                        <button
+                          className="fluxo-dia"
+                          type="button"
+                          onClick={() => setDiaEvento(d.dia)}
+                          title={`Ver só ${d.dia}`}
+                        >
+                          {d.dia.slice(0, 5)}
+                        </button>
+                        {d.valores.map((v, i) => (
+                          <span
+                            className="fluxo-celula"
+                            key={matrizFluxo.horas[i]}
+                            title={`${d.dia} às ${String(matrizFluxo.horas[i]).padStart(2, "0")}h — ${v.toLocaleString(
+                              "pt-BR"
+                            )} pessoa(s)`}
+                          >
+                            {/* com um dia só há espaço para o número; com
+                                vários, ele viraria poluição sobre barras baixas */}
+                            <em className="fluxo-valor">{v > 0 ? v.toLocaleString("pt-BR") : ""}</em>
+                            <span
+                              className={`fluxo-barra ${v === d.picoValor && v > 0 ? "fluxo-pico" : ""}`}
+                              style={{ height: `${Math.max(v > 0 ? 6 : 0, (v / matrizFluxo.maximo) * 100)}%` }}
+                            />
+                          </span>
+                        ))}
+                        <span className="fluxo-total">
+                          {d.total.toLocaleString("pt-BR")}
+                          <em>
+                            pico {String(d.picoHora).padStart(2, "0")}h · {d.picoValor.toLocaleString("pt-BR")}
+                          </em>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <Empty glyph="⌁" title="sem horário registrado" desc="a planilha não trouxe a hora do comparecimento" />
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="panels-rankings">
+            {/* "stacked" só na origem do convite, onde o nome passa de 40 caracteres */}
+            <PainelRanking
+              titulo="Origem do convite"
+              abas={[
+                {
+                  id: "convite",
+                  desc: "de qual lote/patrocinador veio cada ingresso",
+                  dados: ing.convites,
+                  layout: "stacked",
+                },
+              ]}
+            />
+            <PainelRanking titulo="Categoria" abas={[{ id: "categoria", desc: "tipo de ingresso emitido", dados: ing.categorias }]} />
+            <PainelRanking titulo="Cargo" abas={[{ id: "cargo", desc: "quem é o público que se inscreveu", dados: ing.cargos }]} />
+            <PainelRanking titulo="Segmento" abas={[{ id: "segmento", desc: "área de atuação declarada", dados: ing.segmentos }]} />
+            <PainelRanking
+              titulo="Origem geográfica"
+              abas={[
+                { id: "estado", aba: "Estado", desc: "de qual estado veio o público (siglas agrupadas)", dados: ing.estados },
+                { id: "pais", aba: "País", desc: "de qual país veio o público", dados: ing.paises },
+                {
+                  id: "ambos",
+                  aba: "Ambos",
+                  desc: "estado e país no mesmo painel",
+                  grupos: [
+                    { titulo: "Estado", dados: ing.estados },
+                    { titulo: "País", dados: ing.paises },
+                  ],
+                },
+              ]}
+            />
+          </div>
+
+          {ing.documentosRepetidos > 0 && (
+            <div className="import-files-bar" style={{ marginBottom: 12 }}>
+              <span>
+                {ing.documentosDistintos.toLocaleString("pt-BR")} documentos distintos ·{" "}
+                <strong>{ing.documentosRepetidos.toLocaleString("pt-BR")}</strong> aparecem em mais de um ingresso — pode
+                ser a mesma pessoa com vários ingressos ou cadastro duplicado.
+              </span>
+            </div>
+          )}
+        </>
+      )}
 
       <div className="panels">
         <div className="panel">
@@ -417,22 +899,12 @@ export default function FinanceiroPage() {
                 <span className="legend-swatch" style={{ background: "var(--accent)" }} />
                 {t("status.pago").toLowerCase()}
               </span>
-              <span className="legend-item">
-                <span className="legend-swatch" style={{ background: "var(--serie-2)" }} />
-                {t("status.pendente").toLowerCase()}
-              </span>
             </div>
           </div>
           {!data?.timeline.length ? (
             <Empty glyph="⌁" title={t("financeiro.timeline.empty.title")} desc={t("financeiro.timeline.empty.desc")} />
           ) : (
-            <LineChart
-              data={data.timeline}
-              series={[
-                { key: "previsto", color: "var(--serie-2)", secondary: true },
-                { key: "recebido", color: "var(--accent)" },
-              ]}
-            />
+            <LineChart data={data.timeline} series={[{ key: "recebido", color: "var(--accent)" }]} />
           )}
         </div>
 
@@ -479,23 +951,27 @@ export default function FinanceiroPage() {
       </div>
 
       <div className="panels-3">
-        <div className="panel">
-          <div className="panel-head">
-            <div>
-              <h3>{t("financeiro.ranking.title")}</h3>
-              <p>{t("financeiro.ranking.desc")}</p>
+        {/* Em ingresso cada linha é um participante, não um expositor — um
+            "top" de compradores individuais não diz nada sobre o evento. */}
+        {origem !== "ingresso" && (
+          <div className="panel">
+            <div className="panel-head">
+              <div>
+                <h3>{t("financeiro.ranking.title")}</h3>
+                <p>{t("financeiro.ranking.desc")}</p>
+              </div>
             </div>
+            {!data?.topClients.length ? (
+              <Empty glyph="▤" title={t("financeiro.ranking.empty.title")} desc={t("financeiro.ranking.empty.desc")} />
+            ) : (
+              <BarList
+                data={data.topClients}
+                selected={search}
+                onSelect={(name) => setSearch((prev) => (prev === name ? "" : name))}
+              />
+            )}
           </div>
-          {!data?.topClients.length ? (
-            <Empty glyph="▤" title={t("financeiro.ranking.empty.title")} desc={t("financeiro.ranking.empty.desc")} />
-          ) : (
-            <BarList
-              data={data.topClients}
-              selected={search}
-              onSelect={(name) => setSearch((prev) => (prev === name ? "" : name))}
-            />
-          )}
-        </div>
+        )}
 
         <div className="panel">
           <div className="panel-head">
@@ -506,10 +982,10 @@ export default function FinanceiroPage() {
           </div>
           {!data?.statusBreakdown.length ? (
             <>
-              {(["pago", "pendente", "atrasado", "cancelado"] as const).map((s) => (
+              {(["pago", "pendente", "cortesia", "cancelado"] as const).map((s) => (
                 <div className="status-row" key={s}>
                   <span className="status-left">
-                    <span className={`badge ${s}`}>
+                    <span className={`badge ${STATUS_CLASS[s] ?? s}`}>
                       <span className="dot" />
                       {STATUS_LABEL[s]}
                     </span>
@@ -519,7 +995,14 @@ export default function FinanceiroPage() {
               ))}
             </>
           ) : (
-            <StatusBars data={data.statusBreakdown} labels={STATUS_LABEL} />
+            <StatusBars
+              data={data.statusBreakdown}
+              labels={STATUS_LABEL}
+              classMap={STATUS_CLASS}
+              // em ingresso são poucos status e a leitura é de proporção
+              // (quanto é cortesia, quanto foi pago) — lado a lado compara melhor
+              layout={origem === "ingresso" ? "row" : "list"}
+            />
           )}
         </div>
       </div>
@@ -557,31 +1040,88 @@ export default function FinanceiroPage() {
             <h3>{t("financeiro.table.title")}</h3>
             <p>{t("financeiro.table.desc")}</p>
           </div>
-          <div className="search" style={{ maxWidth: 260 }}>
+          {/* busca e filtros na mesma linha: são todos recortes da lista
+              abaixo, e separá-los em duas faixas sugeria escopos diferentes. */}
+          <div className="table-tools">
+            <div className="search">
+              <input
+                type="text"
+                placeholder="Buscar cliente ou nº da duplicata"
+                value={tableSearch}
+                onChange={(e) => setTableSearch(e.target.value)}
+              />
+            </div>
+
+            <span className="table-tools-sep">{t("col.pagamento")}</span>
             <input
-              type="text"
-              placeholder="Buscar cliente ou nº da duplicata"
-              value={tableSearch}
-              onChange={(e) => setTableSearch(e.target.value)}
+              type="date"
+              className="field"
+              value={tableRange.de}
+              max={tableRange.ate || undefined}
+              onChange={(e) => setTableRange((r) => ({ ...r, de: e.target.value }))}
+              aria-label="Data inicial"
             />
+            <span className="table-tools-sep">até</span>
+            <input
+              type="date"
+              className="field"
+              value={tableRange.ate}
+              min={tableRange.de || undefined}
+              onChange={(e) => setTableRange((r) => ({ ...r, ate: e.target.value }))}
+              aria-label="Data final"
+            />
+
+            <select
+              className="field"
+              value={tableStatus}
+              onChange={(e) => setTableStatus(e.target.value as "all" | InvoiceStatus)}
+              aria-label="Status"
+            >
+              <option value="all">{t("common.allStatus")}</option>
+              {(["pago", "pendente", "cortesia", "cancelado"] as const).map((s) => (
+                <option key={s} value={s}>
+                  {STATUS_LABEL[s]}
+                </option>
+              ))}
+            </select>
+
+            {formasDisponiveis.length > 0 && (
+              <select
+                className="field"
+                value={tableForma}
+                onChange={(e) => setTableForma(e.target.value)}
+                aria-label="Forma de pagamento"
+              >
+                <option value="all">{t("common.allMethods")}</option>
+                {formasDisponiveis.map((f) => (
+                  <option key={f} value={f}>
+                    {f}
+                  </option>
+                ))}
+              </select>
+            )}
+
+            {filtrosTabelaAtivos && (
+              <button
+                className="field field-btn"
+                type="button"
+                onClick={() => {
+                  setTableStatus("all");
+                  setTableForma("all");
+                  setTableRange({ de: "", ate: "" });
+                  setTableSearch("");
+                }}
+              >
+                Limpar
+              </button>
+            )}
           </div>
         </div>
         <div className="table-scroll scroll-slim">
           <table>
             <thead>
               <tr>
-                {(
-                  [
-                    ["numero", t("col.numero"), ""],
-                    ["cliente", t("col.cliente"), ""],
-                    ["cnpj", t("col.cnpj"), ""],
-                    ["vencimento", t("col.vencimento"), ""],
-                    ["pagamento", t("col.pagamento"), ""],
-                    ["forma", t("col.forma"), ""],
-                    ["valor", t("col.valor"), "num"],
-                    ["status", t("col.status"), ""],
-                  ] as const
-                ).map(([key, label, cls]) => (
+                {COLUNAS_TABELA.map(({ key, label, cls }) => (
                   <th key={key} className={cls}>
                     <button className="th-sort" type="button" onClick={() => toggleSort(key)}>
                       {label}
@@ -593,28 +1133,57 @@ export default function FinanceiroPage() {
             </thead>
             <tbody>
               {!data?.invoices.length ? (
-                <EmptyTableRow colSpan={8} title={t("financeiro.table.empty.title")} desc={t("financeiro.table.empty.desc")} />
+                <EmptyTableRow colSpan={COLUNAS_TABELA.length} title={t("financeiro.table.empty.title")} desc={t("financeiro.table.empty.desc")} />
               ) : !visibleInvoices.length ? (
-                <EmptyTableRow colSpan={8} title="nenhuma duplicata encontrada" desc={`nenhum resultado para "${tableSearch}"`} />
+                <EmptyTableRow
+                  colSpan={COLUNAS_TABELA.length}
+                  title="nenhuma duplicata encontrada"
+                  desc={
+                    tableSearch.trim()
+                      ? `nenhum resultado para "${tableSearch}" entre as ${data.invoices.length.toLocaleString(
+                          "pt-BR"
+                        )} duplicatas que passaram pelos filtros do topo`
+                      : "nenhuma duplicata atende aos filtros da tabela"
+                  }
+                />
               ) : (
-                sortedInvoices.map((inv, i) => (
+                linhasDaPagina.map((inv, i) => (
                   // `numero` identifica a duplicata, não a linha — uma duplicata rateada
                   // em várias rubricas gera várias linhas com o mesmo número, então o
                   // índice entra na key só pra garantir unicidade de renderização.
                   <tr key={`${inv.numero}-${i}`}>
-                    <td>{inv.numero}</td>
-                    <td style={{ fontFamily: "var(--sans)", color: "var(--ink)" }}>{inv.cliente}</td>
-                    <td>{inv.cnpj}</td>
-                    <td>{inv.vencimento}</td>
-                    <td>{inv.pagamento || "—"}</td>
-                    <td>{inv.forma}</td>
-                    <td className="num">{money(inv.valor)}</td>
-                    <td>
-                      <span className={`badge ${inv.status}`}>
-                        <span className="dot" />
-                        {STATUS_LABEL[inv.status] || inv.status}
-                      </span>
-                    </td>
+                    {COLUNAS_TABELA.map(({ key, cls }) => {
+                      if (key === "status") {
+                        return (
+                          <td key={key}>
+                            <span className={`badge ${STATUS_CLASS[inv.status] ?? inv.status}`}>
+                              <span className="dot" />
+                              {STATUS_LABEL[inv.status] || inv.status}
+                            </span>
+                          </td>
+                        );
+                      }
+                      if (key === "cliente") {
+                        return (
+                          <td key={key} style={{ fontFamily: "var(--sans)", color: "var(--ink)" }}>
+                            {inv.cliente}
+                          </td>
+                        );
+                      }
+                      if (key === "valor") {
+                        return (
+                          <td key={key} className={cls}>
+                            {money(inv.valor)}
+                          </td>
+                        );
+                      }
+                      const v = inv[key];
+                      return (
+                        <td key={key} className={cls}>
+                          {v === null || v === undefined || v === "" ? "—" : String(v)}
+                        </td>
+                      );
+                    })}
                   </tr>
                 ))
               )}
@@ -625,15 +1194,33 @@ export default function FinanceiroPage() {
           <span>
             {!visibleInvoices.length
               ? t("financeiro.table.countZero")
-              : tableSearch.trim()
+              : filtrosTabelaAtivos
               ? `${visibleInvoices.length.toLocaleString("pt-BR")} de ${data!.invoices.length.toLocaleString("pt-BR")} ${t("financeiro.table.count")}`
               : `${visibleInvoices.length.toLocaleString("pt-BR")} ${t("financeiro.table.count")}`}
           </span>
-          {tableSearch.trim() && visibleInvoices.length > 0 ? (
-            <span style={{ fontWeight: 700, color: "var(--ink)" }}>Total: {money(visibleTotal)}</span>
-          ) : (
-            <span>{t("common.page")}</span>
-          )}
+          <span className="pager">
+            {filtrosTabelaAtivos && visibleInvoices.length > 0 && (
+              <span style={{ fontWeight: 700, color: "var(--ink)" }}>Total: {money(visibleTotal)}</span>
+            )}
+            {totalPaginas > 1 && (
+              <>
+                <button className="field field-btn" type="button" disabled={paginaAtual <= 1} onClick={() => setPagina(paginaAtual - 1)}>
+                  ‹
+                </button>
+                <span>
+                  {paginaAtual} / {totalPaginas}
+                </span>
+                <button
+                  className="field field-btn"
+                  type="button"
+                  disabled={paginaAtual >= totalPaginas}
+                  onClick={() => setPagina(paginaAtual + 1)}
+                >
+                  ›
+                </button>
+              </>
+            )}
+          </span>
         </div>
       </div>
 

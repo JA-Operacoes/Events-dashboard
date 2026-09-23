@@ -13,13 +13,15 @@
  */
 
 import * as XLSX from "xlsx";
-import { parseDateLoose } from "./period";
+import { parseDateLoose, separarDataHora } from "./period";
 import * as cptable from "xlsx/dist/cpexcel.full.mjs";
 import type {
   FinanceiroData,
   Invoice,
   InvoiceStatus,
   OrigemReceita,
+  DadosIngresso,
+  IngressoStats,
   CredenciamentoData,
   Participante,
   CredenciamentoStatus,
@@ -91,21 +93,62 @@ export function parseSpreadsheetFile(file: File): Promise<SheetTable> {
 /* ------------------------------ Financeiro ----------------------------- */
 
 export const FINANCEIRO_FIELDS = [
-  { key: "cliente", label: "Cliente", required: true },
-  { key: "valor", label: "Valor", required: true },
-  { key: "forma", label: "Forma de pagamento", required: true },
-  { key: "status", label: "Status", required: true },
-  { key: "numero", label: "Número da duplicata", required: false },
-  { key: "cnpj", label: "CNPJ", required: false },
-  { key: "vencimento", label: "Data de vencimento", required: false },
-  { key: "pagamento", label: "Data de pagamento", required: false },
-  { key: "origem", label: "Origem (expositor/ingresso)", required: false },
-  { key: "quantidade", label: "Quantidade de ingressos", required: false },
-  { key: "centroCusto", label: "Centro de custo", required: false },
-  { key: "conta1", label: "Conta nível 1", required: false },
-  { key: "conta2", label: "Conta nível 2", required: false },
-  { key: "conta3", label: "Conta nível 3", required: false },
+  { key: "cliente", label: "Cliente", required: true, grupo: "Quem" },
+  { key: "cnpj", label: "CNPJ", required: false, grupo: "Quem" },
+  { key: "numero", label: "Número da duplicata", required: false, grupo: "Quem" },
+
+  { key: "valor", label: "Valor", required: true, grupo: "Cobrança" },
+  { key: "forma", label: "Forma de pagamento", required: true, grupo: "Cobrança" },
+  { key: "status", label: "Status", required: true, grupo: "Cobrança" },
+  { key: "pagamento", label: "Data de pagamento", required: false, grupo: "Cobrança" },
+
+  { key: "origem", label: "Origem (expositor/ingresso)", required: false, grupo: "Classificação" },
+  { key: "quantidade", label: "Quantidade de ingressos", required: false, grupo: "Classificação" },
+
+  { key: "centroCusto", label: "Centro de custo", required: false, grupo: "Rateio contábil" },
+  { key: "conta1", label: "Conta nível 1", required: false, grupo: "Rateio contábil" },
+  { key: "conta2", label: "Conta nível 2", required: false, grupo: "Rateio contábil" },
+  { key: "conta3", label: "Conta nível 3", required: false, grupo: "Rateio contábil" },
 ] as const;
+
+/**
+ * Planilha de ingresso é outro mundo: vem do sistema de credenciamento, tem
+ * dezenas de colunas de cadastro (endereço, LGPD, impressão de crachá) e cada
+ * linha é um ingresso, não uma duplicata. Pedir centro de custo, rateio ou
+ * vencimento ali só faria o admin procurar coluna que não existe — por isso o
+ * import mostra apenas o que essa planilha realmente tem.
+ */
+export const FINANCEIRO_INGRESSO_FIELDS = [
+  { key: "cliente", label: "Nome do participante", required: true, grupo: "Quem" },
+  { key: "cnpj", label: "CPF / CNPJ", required: false, grupo: "Quem" },
+  { key: "numero", label: "Código do ingresso", required: false, grupo: "Quem" },
+
+  { key: "valor", label: "Valor pago", required: true, grupo: "Cobrança" },
+  { key: "valorDevido", label: "Valor a pagar (devido)", required: false, grupo: "Cobrança" },
+  { key: "status", label: "Situação do pagamento", required: true, grupo: "Cobrança" },
+  { key: "forma", label: "Forma de pagamento", required: false, grupo: "Cobrança" },
+
+  { key: "pagamento", label: "Data do cadastro", required: false, grupo: "Presença" },
+  { key: "compareceu", label: "Compareceu", required: false, grupo: "Presença" },
+  { key: "dataComparecimento", label: "Data do comparecimento", required: false, grupo: "Presença" },
+  { key: "horaComparecimento", label: "Hora do comparecimento", required: false, grupo: "Presença" },
+
+  { key: "convite", label: "Origem do convite / lote", required: false, grupo: "Perfil do público" },
+  { key: "categoria", label: "Categoria", required: false, grupo: "Perfil do público" },
+  { key: "cargo", label: "Cargo", required: false, grupo: "Perfil do público" },
+  { key: "segmento", label: "Segmento", required: false, grupo: "Perfil do público" },
+  { key: "estado", label: "Estado", required: false, grupo: "Perfil do público" },
+  { key: "pais", label: "País", required: false, grupo: "Perfil do público" },
+] as const;
+
+export type FinanceiroIngressoFieldKey = (typeof FINANCEIRO_INGRESSO_FIELDS)[number]["key"];
+
+/**
+ * Chaves que o import do financeiro aceita, seja qual for a origem escolhida.
+ * Os dois conjuntos se cruzam mas nenhum contém o outro: contas a receber tem
+ * vencimento e rateio de contas; ingresso tem comparecimento, cargo e afins.
+ */
+export type FinanceiroImportKey = FinanceiroFieldKey | FinanceiroIngressoFieldKey;
 
 export type FinanceiroFieldKey = (typeof FINANCEIRO_FIELDS)[number]["key"];
 export type ColumnMapping<K extends string = string> = Partial<Record<K, string>>;
@@ -173,7 +216,16 @@ export function suggestMapping<K extends string>(
   const mapping: ColumnMapping<K> = {};
   const used = new Set<string>();
   for (const { key, patterns } of fieldKeywords) {
-    const match = headers.find((h) => !used.has(h) && patterns.some((p) => p.test(normalize(h))));
+    // Percorre os PADRÕES na ordem declarada e, para cada um, procura a coluna.
+    // O contrário (varrer as colunas e aceitar a primeira que casa qualquer
+    // padrão) fazia a posição da coluna decidir: numa planilha com "TOTAL A
+    // PAGAR" antes de "TOTAL PAGO", o valor saía da coluna errada mesmo com
+    // "total pago" declarado como preferência.
+    let match: string | undefined;
+    for (const p of patterns) {
+      match = headers.find((h) => !used.has(h) && p.test(normalize(h)));
+      if (match) break;
+    }
     if (match) {
       mapping[key] = match;
       used.add(match);
@@ -198,11 +250,12 @@ export function suggestValueMapping<V extends string>(
 const FINANCEIRO_FIELD_KEYWORDS: { key: FinanceiroFieldKey; patterns: RegExp[] }[] = [
   { key: "cnpj", patterns: [/cnpj/, /documento/] },
   { key: "numero", patterns: [/\bn[uú]mero\b/, /\bnf\b/, /duplicata/, /fatura/, /invoice/, /\bnº\b/, /\bn°\b/] },
-  { key: "vencimento", patterns: [/vencimento/, /due ?date/] },
   { key: "pagamento", patterns: [/data.*pag/, /pag.*data/, /pago em/, /paid ?on/] },
   { key: "forma", patterns: [/forma.*pag/, /m[eé]todo/, /payment.*method/] },
   { key: "status", patterns: [/status/, /situa[cç][aã]o/] },
-  { key: "valor", patterns: [/valor/, /montante/, /total/, /amount/] },
+  // "TOTAL DA DUPLICATA" é o valor da linha; "VALOR TOTAL DOCUMENTO" pode
+  // somar várias duplicatas do mesmo documento e inflaria o total.
+  { key: "valor", patterns: [/total da duplicata/, /valor da duplicata/, /^valor$/, /valor total/, /montante/, /^total$/, /amount/, /valor/] },
   { key: "cliente", patterns: [/empresa/, /cliente/, /raz[aã]o social/, /expositor/, /client/] },
   { key: "origem", patterns: [/^origem$/, /origem/, /procedencia/, /tipo.*receita/] },
   { key: "quantidade", patterns: [/quantidade/, /\bqtd\b/, /\bqtde\b/, /ingressos?/, /\bqty\b/] },
@@ -212,15 +265,86 @@ const FINANCEIRO_FIELD_KEYWORDS: { key: FinanceiroFieldKey; patterns: RegExp[] }
   { key: "conta3", patterns: [/^conta ?3$/, /^conta ?n[ií]vel ?3$/] },
 ];
 
-export function suggestFinanceiroMapping(headers: string[]): ColumnMapping<FinanceiroFieldKey> {
+export function suggestFinanceiroMapping(headers: string[]): ColumnMapping<FinanceiroImportKey> {
   return suggestMapping(headers, FINANCEIRO_FIELD_KEYWORDS);
+}
+
+/**
+ * Cabeçalhos da planilha de ingresso não batem com os de contas a receber: lá
+ * "PAGAMENTO" é a situação (Gratuita/Pago/Em Aberto), a data está em "DATA
+ * CADASTRO" e o valor em "TOTAL PAGO". A ordem cuida das armadilhas: "FORMA DE
+ * PAGAMENTO" e "DATA CADASTRO" são resolvidas antes de "PAGAMENTO" sozinho.
+ */
+const FINANCEIRO_INGRESSO_KEYWORDS: { key: FinanceiroIngressoFieldKey; patterns: RegExp[] }[] = [
+  { key: "compareceu", patterns: [/^compareceu$/, /^presen[cç]a$/] },
+  // a data de impressão do crachá é o registro de quando a pessoa passou no
+  // balcão — é o que dá o público por dia de evento
+  { key: "dataComparecimento", patterns: [/data.?hora.*(impress|check|comparec|entrada)/, /data.*impress/, /data.*check.?in/, /data.*comparec/, /data.*entrada/] },
+  { key: "horaComparecimento", patterns: [/hora.*impress/, /hora.*check.?in/, /hora.*comparec/, /hora.*entrada/] },
+  { key: "valorDevido", patterns: [/total a pagar$/, /valor a pagar/, /valor devido/] },
+  { key: "convite", patterns: [/^edi[cç][aã]o$/, /lote/, /convidado de/, /origem.*convite/] },
+  { key: "categoria", patterns: [/^categoria$/, /tipo.*ingresso/, /nome ingresso/] },
+  // "CARGOS" (lista padronizada) antes de "CARGO" (texto livre digitado pelo
+  // participante): a primeira agrupa, a segunda tem um valor por pessoa.
+  { key: "cargo", patterns: [/^cargos$/, /^cargo$/, /fun[cç][aã]o/] },
+  { key: "segmento", patterns: [/^segmentos?$/, /[aá]rea de atua/] },
+  { key: "estado", patterns: [/^estado$/, /\buf\b/, /estado comercial/] },
+  { key: "pais", patterns: [/^pa[ií]s$/, /pa[ií]s comercial/] },
+  { key: "forma", patterns: [/forma.*pag/, /m[eé]todo.*pag/] },
+  { key: "pagamento", patterns: [/data.*pagamento/, /data.*cadastro/, /^data$/] },
+  { key: "status", patterns: [/^pagamento$/, /situa[cç][aã]o/, /^status$/] },
+  { key: "valor", patterns: [/total pago/, /total a pagar$/, /^valor$/, /valor pago/] },
+  { key: "cnpj", patterns: [/^cpf$/, /^cnpj$/, /cpf.*cnpj/, /documento/] },
+  { key: "numero", patterns: [/c[oó]digo.*(cracha|ingresso|convite)/, /ingressos? ?\/ ?convites?/, /^c[oó]digo$/] },
+  { key: "cliente", patterns: [/nome completo/, /nome.*participante/, /^nome$/, /raz[aã]o social/] },
+];
+
+export function suggestFinanceiroIngressoMapping(headers: string[]): ColumnMapping<FinanceiroImportKey> {
+  return suggestMapping(headers, FINANCEIRO_INGRESSO_KEYWORDS);
+}
+
+/**
+ * "São Paulo", "SP" e "sao paulo" são o mesmo estado e apareciam como três
+ * barras. Converte para a sigla quando reconhece o nome; o que não for estado
+ * brasileiro fica como veio (capitalizado), para não inventar sigla.
+ */
+const UF_POR_NOME: Record<string, string> = {
+  acre: "AC", alagoas: "AL", amapa: "AP", amazonas: "AM", bahia: "BA", ceara: "CE",
+  "distrito federal": "DF", "espirito santo": "ES", goias: "GO", maranhao: "MA",
+  "mato grosso": "MT", "mato grosso do sul": "MS", "minas gerais": "MG", para: "PA",
+  paraiba: "PB", parana: "PR", pernambuco: "PE", piaui: "PI", "rio de janeiro": "RJ",
+  "rio grande do norte": "RN", "rio grande do sul": "RS", rondonia: "RO", roraima: "RR",
+  "santa catarina": "SC", "sao paulo": "SP", sergipe: "SE", tocantins: "TO",
+};
+const UFS = new Set(Object.values(UF_POR_NOME));
+
+export function normalizarEstado(valor: string | null | undefined): string {
+  const v = normalize(valor ?? "");
+  if (!v) return "";
+  if (UF_POR_NOME[v]) return UF_POR_NOME[v];
+  const sigla = v.toUpperCase();
+  if (sigla.length === 2 && UFS.has(sigla)) return sigla;
+  return (valor ?? "").trim();
+}
+
+/** "Sim"/"Não"/"SIM" da planilha viram booleano; qualquer outra coisa é "não informado". */
+function parseSimNao(valor: string | undefined): boolean | null {
+  const v = normalize(valor ?? "");
+  if (!v) return null;
+  if (/^(sim|s|yes|y|true|1)$/.test(v)) return true;
+  if (/^(nao|n|no|false|0)$/.test(v)) return false;
+  return null;
 }
 
 const FINANCEIRO_STATUS_KEYWORDS: { value: InvoiceStatus; patterns: RegExp[] }[] = [
   { value: "cancelado", patterns: [/cancelad/, /anulad/, /estornad/, /void/] },
+  // cortesia antes de pago: "Gratuita" não é pagamento, e contá-la como pago
+  // inflaria a quantidade de ingressos vendidos.
+  { value: "cortesia", patterns: [/gratuit/, /cortesia/, /convite/, /isent/, /free/] },
   { value: "pago", patterns: [/pago/, /quitad/, /pay?d/, /liquidad/] },
-  { value: "atrasado", patterns: [/atrasad/, /vencid/, /overdue/, /late/] },
-  { value: "pendente", patterns: [/pendente/, /aberto/, /open/, /pending/] },
+  // vencido/atrasado entra como pendente: continua sendo cobrança em aberto,
+  // e a data de vencimento na tabela já mostra quem passou do prazo.
+  { value: "pendente", patterns: [/pendente/, /aberto/, /open/, /pending/, /atrasad/, /vencid/, /overdue/, /late/] },
 ];
 
 export function suggestFinanceiroStatusMapping(values: string[]): StatusMapping<InvoiceStatus> {
@@ -244,7 +368,6 @@ export function sugerirOrigemFinanceiro(fileName: string, table: SheetTable): st
   if (suggestFinanceiroMapping(table.headers).origem) return "auto";
 
   const n = normalize(fileName);
-  if (/portaria|bilheteria|catraca/.test(n)) return "Portaria";
   if (/ingresso|inscri|participante|visitante/.test(n)) return "Ingresso";
   if (/expositor|montador|estande|patrocin/.test(n)) return "Expositor";
   return "";
@@ -253,9 +376,6 @@ export function sugerirOrigemFinanceiro(fileName: string, table: SheetTable): st
 export function classificarOrigem(origem: string | null | undefined): OrigemReceita | null {
   const o = normalize(origem ?? "");
   if (!o) return null;
-  // portaria antes de ingresso: "venda de ingresso na portaria" é receita de
-  // portaria, e a regra de ingresso casaria com ela primeiro.
-  if (/portaria|porteir|bilheteria|catraca|acesso|entrada/.test(o)) return "portaria";
   if (/ingresso|inscri|participante|visitante|credencial|congressista|ticket/.test(o)) return "ingresso";
   if (/expositor|montador|estande|stand|patrocin/.test(o)) return "expositor";
   return null;
@@ -275,27 +395,50 @@ export function distinctValues(table: SheetTable, column: string): string[] {
  */
 export function mapRowsToInvoices(
   table: SheetTable,
-  mapping: ColumnMapping<FinanceiroFieldKey>,
+  mapping: ColumnMapping<FinanceiroImportKey>,
   statusMapping: StatusMapping<InvoiceStatus>,
   sourceFile: string,
   /** Origem escolhida no import: "auto" deixa a coluna da planilha decidir. */
   origemEscolhida?: string
 ): Invoice[] {
-  const idx = (key: FinanceiroFieldKey) => {
+  const idx = (key: FinanceiroImportKey) => {
     const col = mapping[key];
     return col ? table.headers.indexOf(col) : -1;
   };
+  const texto = (r: string[], i: number) => (i >= 0 ? r[i]?.trim() ?? "" : "");
   const iCliente = idx("cliente");
   const iValor = idx("valor");
   const iForma = idx("forma");
   const iStatus = idx("status");
   const iNumero = idx("numero");
   const iCnpj = idx("cnpj");
-  const iVenc = idx("vencimento");
   const iPag = idx("pagamento");
   const iOrigem = idx("origem");
   const iQuantidade = idx("quantidade");
   const iCentroCusto = idx("centroCusto");
+
+  const iCompareceu = idx("compareceu");
+  const iDataComparecimento = idx("dataComparecimento");
+  const iHoraComparecimento = idx("horaComparecimento");
+  const iValorDevido = idx("valorDevido");
+  const iConvite = idx("convite");
+  const iCategoria = idx("categoria");
+  const iCargo = idx("cargo");
+  const iSegmento = idx("segmento");
+  const iEstado = idx("estado");
+  const iPais = idx("pais");
+  const temDadosIngresso = [
+    iCompareceu,
+    iDataComparecimento,
+    iHoraComparecimento,
+    iValorDevido,
+    iConvite,
+    iCategoria,
+    iCargo,
+    iSegmento,
+    iEstado,
+    iPais,
+  ].some((i) => i >= 0);
 
   const escolha = (origemEscolhida ?? "").trim();
   const forcarOrigem = !escolha || escolha === "auto" ? "" : escolha;
@@ -303,13 +446,23 @@ export function mapRowsToInvoices(
   const iConta2 = idx("conta2");
   const iConta3 = idx("conta3");
 
-  return table.rows.map((r, i) => {
+  return table.rows
+    .filter((r) => {
+      // Linha de aviso/observação no meio da planilha (uma célula solta
+      // preenchida) entrava como duplicata fantasma de valor zero.
+      const semCliente = iCliente >= 0 && !r[iCliente]?.trim();
+      const semValor = iValor < 0 || !r[iValor]?.trim() || parseValor(r[iValor]) === 0;
+      return !(semCliente && semValor);
+    })
+    .map((r, i) => {
     const rawStatus = iStatus >= 0 ? r[iStatus] : "";
     return {
       numero: iNumero >= 0 && r[iNumero] ? r[iNumero] : `${sourceFile}#${i + 1}`,
       cliente: iCliente >= 0 ? r[iCliente] : "",
       cnpj: iCnpj >= 0 ? r[iCnpj] : "",
-      vencimento: iVenc >= 0 ? r[iVenc] : "",
+      // vencimento saiu do painel: nada mais lê essa data, e o ERP a regera
+      // quando a duplicata vence
+      vencimento: "",
       pagamento: iPag >= 0 && r[iPag] ? r[iPag] : null,
       forma: iForma >= 0 ? r[iForma] : "",
       valor: iValor >= 0 ? parseValor(r[iValor]) : 0,
@@ -317,6 +470,22 @@ export function mapRowsToInvoices(
       // a escolha do import vale para o arquivo inteiro; "auto" devolve a
       // decisão para a coluna, que pode variar linha a linha.
       quantidade: iQuantidade >= 0 && r[iQuantidade] ? parseInt(r[iQuantidade].replace(/[^\d-]/g, ""), 10) || null : null,
+      ingresso: temDadosIngresso
+        ? ((comparecimento) => ({
+            compareceu: parseSimNao(texto(r, iCompareceu)),
+            valorDevido: iValorDevido >= 0 && r[iValorDevido] ? parseValor(r[iValorDevido]) : null,
+            convite: texto(r, iConvite),
+            categoria: texto(r, iCategoria),
+            cargo: texto(r, iCargo),
+            segmento: texto(r, iSegmento),
+            estado: normalizarEstado(texto(r, iEstado)),
+            pais: texto(r, iPais),
+            cadastro: separarDataHora(iPag >= 0 ? r[iPag] : "").data,
+            dataComparecimento: comparecimento.data,
+            // hora própria manda; sem ela, usa a que veio colada na data
+            horaComparecimento: texto(r, iHoraComparecimento) || comparecimento.hora,
+          }))(separarDataHora(texto(r, iDataComparecimento)))
+        : null,
       origem: forcarOrigem || (iOrigem >= 0 ? r[iOrigem] : ""),
       origemTipo: classificarOrigem(forcarOrigem || (iOrigem >= 0 ? r[iOrigem] : "")),
       centroCusto: iCentroCusto >= 0 && r[iCentroCusto] ? r[iCentroCusto] : null,
@@ -371,49 +540,31 @@ export function aggregateFinanceiro(invoices: Invoice[]): FinanceiroData {
     }
   }
 
-  // timeline e pontualidade só existem quando a planilha traz vencimento/pagamento —
-  // opcionais no mapeamento, então ficam nulos/vazios se não vierem preenchidos.
+  // Só o realizado: o vencimento saiu do painel porque, quando uma duplicata
+  // vence, o ERP gera outra no lugar — a data antiga não descreve mais nada
+  // que se possa comparar com o que entrou.
   const recebidoPorDia = new Map<string, number>();
-  const previstoPorDia = new Map<string, number>();
-  let pontualidadeSoma = 0;
-  let pontualidadeQtd = 0;
-
   for (const inv of invoices) {
     if (inv.pagamento) recebidoPorDia.set(inv.pagamento, (recebidoPorDia.get(inv.pagamento) ?? 0) + inv.valor);
-    if (inv.vencimento) previstoPorDia.set(inv.vencimento, (previstoPorDia.get(inv.vencimento) ?? 0) + inv.valor);
-    if (inv.pagamento && inv.vencimento) {
-      const dPag = Date.parse(inv.pagamento);
-      const dVenc = Date.parse(inv.vencimento);
-      if (Number.isFinite(dPag) && Number.isFinite(dVenc)) {
-        pontualidadeSoma += (dVenc - dPag) / 86_400_000; // dias de antecedência (negativo = atraso)
-        pontualidadeQtd++;
-      }
-    }
   }
 
-  const dates = Array.from(new Set([...recebidoPorDia.keys(), ...previstoPorDia.keys()])).sort();
-  const timeline = dates.map((date) => ({
-    date,
-    recebido: recebidoPorDia.get(date) ?? 0,
-    previsto: previstoPorDia.get(date) ?? 0,
-  }));
+  const timeline = Array.from(recebidoPorDia, ([date, recebido]) => ({ date, recebido })).sort(
+    (a, b) => parseDateLoose(a.date) - parseDateLoose(b.date)
+  );
 
-  // Leitura de ingresso: quantos ingressos foram comprados e quantos o mesmo
-  // comprador leva em média. Duplicata sem coluna de quantidade conta como 1 —
-  // é uma compra. O comprador é o CNPJ/CPF; sem documento, cai para o nome.
+  // Leitura de ingresso: quantos ingressos saíram. Linha sem coluna de
+  // quantidade conta como 1 — é um ingresso.
   const naoCanceladas = invoices.filter((i) => i.status !== "cancelado");
   const qtdIngressos = naoCanceladas.reduce((s, i) => s + (i.quantidade ?? 1), 0);
-  const compradores = new Set(naoCanceladas.map((i) => i.cnpj?.trim() || i.cliente?.trim()).filter(Boolean));
 
   return {
     asOf: new Date().toISOString(),
+    ingressoStats: agregarIngresso(invoices),
     kpis: {
       totalRecebido,
       ticketMedio,
       qtdDuplicatas: invoices.length,
-      pontualidadeDias: pontualidadeQtd ? pontualidadeSoma / pontualidadeQtd : null,
       qtdIngressos: naoCanceladas.length ? qtdIngressos : null,
-      mediaPorComprador: compradores.size ? qtdIngressos / compradores.size : null,
     },
     timeline,
     paymentMethods: Array.from(methodTotals, ([label, value]) => ({ label, value })),
@@ -421,9 +572,181 @@ export function aggregateFinanceiro(invoices: Invoice[]): FinanceiroData {
       .sort((a, b) => b.value - a.value)
       .slice(0, 10),
     statusBreakdown: Array.from(statusTotals, ([label, value]) => ({ label, value })),
-    contas: Array.from(contaTotals, ([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value),
+    // conta com total zerado não diz nada e só ocupa linha no painel — some.
+    contas: Array.from(contaTotals, ([name, value]) => ({ name, value }))
+      .filter((c) => c.value > 0)
+      .sort((a, b) => b.value - a.value),
     origens: Array.from(origemTotals, ([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value),
     invoices,
+  };
+}
+
+/**
+ * Junta variações de escrita do mesmo valor: "Diretor", "Diretora" e "DIRETOR"
+ * são um cargo só, mas chegam como três linhas do ranking.
+ *
+ * Caixa, acento, pontuação e espaço sobrando são sempre ignorados. O gênero é
+ * unido só quando as DUAS formas aparecem nos dados — aplicar a regra às cegas
+ * transformaria "Secretaria" (a área) em "Secretário" (o cargo) e "Consultoria"
+ * em "Consultório". O rótulo exibido é a grafia mais frequente entre as
+ * variantes, para a tela mostrar como o pessoal realmente escreve.
+ */
+export function agruparVariacoes(
+  itens: Array<{ name: string; value: number }>,
+  opcoes: { unirGenero?: boolean } = {}
+): Array<{ name: string; value: number }> {
+  // 1) caixa/acento/pontuação: "DIRETOR" e "Diretor" viram a mesma chave
+  const porChave = new Map<string, { total: number; grafias: Map<string, number> }>();
+  for (const item of itens) {
+    const chave = normalize(item.name)
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!chave) continue;
+    const atual = porChave.get(chave) ?? { total: 0, grafias: new Map<string, number>() };
+    atual.total += item.value;
+    atual.grafias.set(item.name, (atual.grafias.get(item.name) ?? 0) + item.value);
+    porChave.set(chave, atual);
+  }
+
+  // 2) gênero, só entre chaves que coexistem
+  if (opcoes.unirGenero) {
+    const masculinoDe = (chave: string) =>
+      chave
+        .split(" ")
+        .map((w) => (w.length > 4 ? w.replace(/oras$/, "ores").replace(/ora$/, "or").replace(/as$/, "os").replace(/a$/, "o") : w))
+        .join(" ");
+
+    for (const [chave, dados] of [...porChave]) {
+      const masc = masculinoDe(chave);
+      if (masc === chave) continue;
+      const destino = porChave.get(masc);
+      if (!destino) continue; // sem a forma masculina nos dados, não mexe
+      destino.total += dados.total;
+      for (const [g, q] of dados.grafias) destino.grafias.set(g, (destino.grafias.get(g) ?? 0) + q);
+      porChave.delete(chave);
+    }
+  }
+
+  return Array.from(porChave.values())
+    .map(({ total, grafias }) => ({
+      // grafia mais usada vence; empate resolve pela ordem alfabética para o
+      // resultado não depender da ordem de leitura do arquivo
+      name: Array.from(grafias).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "pt-BR"))[0][0],
+      value: total,
+    }))
+    .sort((a, b) => b.value - a.value);
+}
+
+/**
+ * Leituras exclusivas do recorte de ingressos. Só roda sobre as linhas que
+ * têm o bloco `ingresso` preenchido — planilha de contas a receber não tem
+ * nada disso e devolve nulo, o que faz a tela esconder os painéis.
+ */
+function agregarIngresso(invoices: Invoice[]): IngressoStats | null {
+  const comDados = invoices.filter((i) => i.ingresso && i.status !== "cancelado");
+  if (!comDados.length) return null;
+
+  const compareceram = comDados.filter((i) => i.ingresso!.compareceu === true).length;
+  const faltaram = comDados.filter((i) => i.ingresso!.compareceu === false).length;
+  const totalComPresenca = compareceram + faltaram;
+
+  // Em aberto = o que foi cobrado menos o que entrou. Linha sem valor devido
+  // informado fica de fora: contar devido zero viraria crédito a favor.
+  let devido = 0;
+  let pagoDeQuemDeve = 0;
+  let temDevido = false;
+  for (const i of comDados) {
+    const d = i.ingresso!.valorDevido;
+    if (d == null) continue;
+    temDevido = true;
+    devido += d;
+    pagoDeQuemDeve += i.valor;
+  }
+
+  const porStatus = new Map<InvoiceStatus, { compareceu: number; faltou: number }>();
+  for (const i of comDados) {
+    if (i.ingresso!.compareceu == null) continue;
+    const atual = porStatus.get(i.status) ?? { compareceu: 0, faltou: 0 };
+    if (i.ingresso!.compareceu) atual.compareceu++;
+    else atual.faltou++;
+    porStatus.set(i.status, atual);
+  }
+
+  // Devolve o ranking inteiro: quantos itens aparecem é decisão da tela, que
+  // tem o botão "ver todos". Cortar aqui esconderia o 9º cargo para sempre.
+  const contar = (get: (d: DadosIngresso) => string | undefined) => {
+    const m = new Map<string, number>();
+    for (const i of comDados) {
+      const v = (get(i.ingresso!) ?? "").trim();
+      if (v) m.set(v, (m.get(v) ?? 0) + 1);
+    }
+    return Array.from(m, ([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
+  };
+
+  const porDia = new Map<string, number>();
+  for (const i of comDados) {
+    const d = (i.ingresso!.cadastro ?? "").trim();
+    if (d) porDia.set(d, (porDia.get(d) ?? 0) + 1);
+  }
+  const cadastrosPorDia = Array.from(porDia, ([date, cadastros]) => ({ date, cadastros })).sort(
+    (a, b) => parseDateLoose(a.date) - parseDateLoose(b.date)
+  );
+
+  // Público por dia: conta pela data em que o crachá foi impresso. Quem tem
+  // data mas está marcado como ausente entrou pela catraca do mesmo jeito —
+  // a data é o registro mais concreto dos dois.
+  const porDiaEvento = new Map<string, number>();
+  for (const i of comDados) {
+    const d = (i.ingresso!.dataComparecimento ?? "").trim();
+    if (d) porDiaEvento.set(d, (porDiaEvento.get(d) ?? 0) + 1);
+  }
+  const comparecimentoPorDia = Array.from(porDiaEvento, ([name, value]) => ({ name, value })).sort(
+    (a, b) => parseDateLoose(a.name) - parseDateLoose(b.name)
+  );
+
+  // Fluxo do credenciamento: quantas pessoas passaram em cada hora de cada
+  // dia. A hora vem como "14:25:03" e o que importa é a faixa horária.
+  const porHora = new Map<string, number>();
+  for (const i of comDados) {
+    const dia = (i.ingresso!.dataComparecimento ?? "").trim();
+    const hora = (i.ingresso!.horaComparecimento ?? "").trim();
+    if (!dia || !hora) continue;
+    const h = parseInt(hora.slice(0, 2), 10);
+    if (!Number.isFinite(h) || h < 0 || h > 23) continue;
+    const chave = dia + "|" + h;
+    porHora.set(chave, (porHora.get(chave) ?? 0) + 1);
+  }
+  const comparecimentoPorHora = Array.from(porHora, ([chave, pessoas]) => {
+    const [dia, h] = chave.split("|");
+    return { dia, hora: Number(h), pessoas };
+  }).sort((a, b) => parseDateLoose(a.dia) - parseDateLoose(b.dia) || a.hora - b.hora);
+
+  const porDoc = new Map<string, number>();
+  for (const i of comDados) {
+    const doc = i.cnpj?.trim();
+    if (doc) porDoc.set(doc, (porDoc.get(doc) ?? 0) + 1);
+  }
+
+  return {
+    compareceram,
+    faltaram,
+    taxaComparecimento: totalComPresenca ? (compareceram / totalComPresenca) * 100 : null,
+    valorEmAberto: temDevido ? Math.max(0, devido - pagoDeQuemDeve) : null,
+    comparecimentoPorStatus: Array.from(porStatus, ([status, v]) => ({ status, ...v })),
+    convites: contar((d) => d.convite),
+    categorias: agruparVariacoes(contar((d) => d.categoria)),
+    // cargo tem masculino/feminino ("Diretor"/"Diretora"); segmento é
+    // descrição de área, onde unir gênero não faria sentido
+    cargos: agruparVariacoes(contar((d) => d.cargo), { unirGenero: true }),
+    segmentos: agruparVariacoes(contar((d) => d.segmento)),
+    estados: contar((d) => d.estado),
+    paises: contar((d) => d.pais),
+    cadastrosPorDia,
+    comparecimentoPorDia,
+    comparecimentoPorHora,
+    documentosRepetidos: Array.from(porDoc.values()).filter((v) => v > 1).length,
+    documentosDistintos: porDoc.size,
   };
 }
 
@@ -458,12 +781,13 @@ export function loadMapping<K extends string, V extends string>(
 /* --------------------------- Credenciamento ----------------------------- */
 
 export const CREDENCIAMENTO_FIELDS = [
-  { key: "nome", label: "Nome", required: true },
-  { key: "documento", label: "Documento (CPF/RG)", required: true },
-  { key: "status", label: "Status", required: true },
-  { key: "categoria", label: "Categoria", required: false },
-  { key: "credenciadoEm", label: "Data de credenciamento", required: false },
-  { key: "checkinEm", label: "Data/hora do check-in", required: false },
+  { key: "nome", label: "Nome", required: true, grupo: "Quem" },
+  { key: "documento", label: "Documento (CPF/RG)", required: true, grupo: "Quem" },
+  { key: "categoria", label: "Categoria", required: false, grupo: "Quem" },
+
+  { key: "status", label: "Status", required: true, grupo: "Credenciamento" },
+  { key: "credenciadoEm", label: "Data de credenciamento", required: false, grupo: "Credenciamento" },
+  { key: "checkinEm", label: "Data/hora do check-in", required: false, grupo: "Credenciamento" },
 ] as const;
 
 export type CredenciamentoFieldKey = (typeof CREDENCIAMENTO_FIELDS)[number]["key"];
@@ -573,25 +897,36 @@ export function aggregateCredenciamento(participantes: Participante[]): Credenci
 
 /* ----------------------------- Operacional ------------------------------ */
 
+/**
+ * Campos do import agrupados por assunto. Só expositor e status são exigidos:
+ * cada serviço tem sua planilha e elas não trazem as mesmas colunas — muitas
+ * não têm quantidade (uma linha = um pedido), algumas usam data/hora e outras
+ * só turno.
+ */
 export const OPERACIONAL_FIELDS = [
-  { key: "expositor", label: "Expositor (razão social)", required: true },
-  { key: "status", label: "Status", required: true },
-  // Daqui pra baixo é tudo opcional de propósito: cada serviço tem sua
-  // planilha e elas não trazem as mesmas colunas — muitas não têm quantidade
-  // (uma linha = um pedido), algumas usam data/hora e outras só turno.
-  { key: "quantidade", label: "Quantidade", required: false },
-  { key: "nomeFantasia", label: "Nome fantasia", required: false },
-  { key: "cnpj", label: "CNPJ / CPF", required: false },
-  { key: "estande", label: "Nº do estande", required: false },
-  { key: "localizacao", label: "Localização (pavilhão/setor)", required: false },
-  { key: "tipoEstande", label: "Tipo de estande / montagem", required: false },
-  { key: "dias", label: "Nº de dias", required: false },
-  { key: "valor", label: "Valor (unitário ou total)", required: false },
-  { key: "dataInicio", label: "Data inicial", required: false },
-  { key: "dataFim", label: "Data final", required: false },
-  { key: "horaInicio", label: "Hora inicial", required: false },
-  { key: "horaFim", label: "Hora final", required: false },
-  { key: "turno", label: "Turno", required: false },
+  { key: "expositor", label: "Expositor (razão social)", required: true, grupo: "Quem contratou" },
+  { key: "nomeFantasia", label: "Nome fantasia", required: false, grupo: "Quem contratou" },
+  { key: "cnpj", label: "CNPJ / CPF", required: false, grupo: "Quem contratou" },
+
+  { key: "estande", label: "Nº do estande", required: false, grupo: "Onde" },
+  { key: "localizacao", label: "Localização (pavilhão/setor)", required: false, grupo: "Onde" },
+  { key: "tipoEstande", label: "Tipo de estande / montagem", required: false, grupo: "Onde" },
+  { key: "area", label: "Área (m²)", required: false, grupo: "Onde" },
+
+  { key: "equipamento", label: "Equipamento / item", required: false, grupo: "O que foi contratado" },
+  { key: "tipo", label: "Tipo / variação do item", required: false, grupo: "O que foi contratado" },
+  { key: "quantidade", label: "Quantidade", required: false, grupo: "O que foi contratado" },
+  { key: "kva", label: "Potência (kVA)", required: false, grupo: "O que foi contratado" },
+
+  { key: "dataInicio", label: "Data inicial", required: false, grupo: "Quando" },
+  { key: "dataFim", label: "Data final", required: false, grupo: "Quando" },
+  { key: "horaInicio", label: "Hora inicial", required: false, grupo: "Quando" },
+  { key: "horaFim", label: "Hora final", required: false, grupo: "Quando" },
+  { key: "turno", label: "Turno", required: false, grupo: "Quando" },
+  { key: "dias", label: "Nº de dias", required: false, grupo: "Quando" },
+
+  { key: "status", label: "Status", required: true, grupo: "Cobrança" },
+  { key: "valor", label: "Valor (unitário ou total)", required: false, grupo: "Cobrança" },
 ] as const;
 
 export type OperacionalFieldKey = (typeof OPERACIONAL_FIELDS)[number]["key"];
@@ -612,17 +947,25 @@ const OPERACIONAL_FIELD_KEYWORDS: { key: OperacionalFieldKey; patterns: RegExp[]
   // tipo antes de estande: "Tipo de Estande" seria capturado pelo padrão de
   // estande (que procura o número do estande) se viesse depois.
   { key: "tipoEstande", patterns: [/tipo.*(estande|montagem|stand)/, /^montagem$/, /categoria.*estande/] },
+  { key: "equipamento", patterns: [/equipamento/, /^item$/, /produto/, /material/] },
+  // "tipo" genérico só depois dos tipos específicos, para não roubar a coluna
+  // de montagem nem a de faturamento
+  { key: "tipo", patterns: [/tipo de energia/, /voltagem/, /idioma/, /modalidade/, /varia[cç][aã]o/, /^tipo$/] },
   { key: "estande", patterns: [/estande/, /stand/, /\bbox\b/, /booth/] },
   { key: "dias", patterns: [/dias/, /di[aá]ria/, /days/] },
   // hora antes de data: "Hora Final" não pode ser capturada pelo padrão de
   // data final, e "Data Início" não pode ser capturada pelo de hora.
   { key: "horaInicio", patterns: [/hor(a|ário|ario).*(in[ií]cio|inicial|entrada)/, /(in[ií]cio|inicial|entrada).*hora/] },
   { key: "horaFim", patterns: [/hor(a|ário|ario).*(fim|final|t[eé]rmino|sa[ií]da)/, /(fim|final|t[eé]rmino|sa[ií]da).*hora/] },
-  { key: "dataInicio", patterns: [/data .*(in[ií]cio|inicial|entrada)/, /(in[ií]cio|inicial).*data/, /^in[ií]cio$/, /^data$/] },
+  { key: "dataInicio", patterns: [/data.?hora/, /data .*(in[ií]cio|inicial|entrada)/, /(in[ií]cio|inicial).*data/, /^in[ií]cio$/, /^data$/] },
   { key: "dataFim", patterns: [/data .*(fim|final|t[eé]rmino|sa[ií]da)/, /(fim|final|t[eé]rmino).*data/, /^(fim|final|t[eé]rmino)$/] },
   { key: "turno", patterns: [/turno/, /per[ií]odo/] },
   { key: "quantidade", patterns: [/quantidade/, /\bqtd\b/, /\bqtde\b/, /\bqty\b/] },
   { key: "valor", patterns: [/valor/, /pre[cç]o/, /^total$/, /amount/] },
+  // "Total Geral" é a soma de kva + mínimo + cortesia: é o número que
+  // interessa, e vem antes das colunas parciais na ordem de preferência
+  { key: "kva", patterns: [/^total geral$/, /kva total/, /^kva$/, /pot[eê]ncia/] },
+  { key: "area", patterns: [/[aá]rea/, /\bm2\b/, /m²/] },
   { key: "status", patterns: [/status/, /situa[cç][aã]o/] },
 ];
 
@@ -732,10 +1075,9 @@ export function suggestOperacionalMapping(headers: string[]): ColumnMapping<Oper
 }
 
 const OPERACIONAL_STATUS_KEYWORDS: { value: ServicoStatus; patterns: RegExp[] }[] = [
-  // "sem débito/sem crédito" antes de tudo: a frase contém "debito"/"credito",
-  // que apareceriam em outras regras, e ela é a mais específica das cinco.
-  { value: "semDebito", patterns: [/sem ?d[eé]bito/, /sem ?cr[eé]dito/, /sem ?cobran/, /n[aã]o ?gera ?cobran/] },
-  { value: "isento", patterns: [/isent/, /cortesia/, /gratuit/, /dispensad/] },
+  // isento vem primeiro porque "sem débito"/"sem crédito" contém palavras que
+  // as outras regras também procuram
+  { value: "isento", patterns: [/isent/, /cortesia/, /gratuit/, /dispensad/, /sem ?d[eé]bito/, /sem ?cr[eé]dito/, /sem ?cobran/, /n[aã]o ?gera ?cobran/] },
   { value: "cancelado", patterns: [/cancelad/, /recusad/, /negad/, /reprovad/, /estornad/, /desistiu/] },
   { value: "pago", patterns: [/pago/, /quitad/, /liquidad/, /paid/, /confirmad/, /aprovad/] },
   { value: "pendente", patterns: [/pendente/, /em aberto/, /aberto/, /aguardando/, /an[aá]lise/, /solicitad/] },
@@ -805,6 +1147,10 @@ export function mapRowsToPedidos(
   const iHoraFim = idx("horaFim");
   const iTurno = idx("turno");
   const iValor = idx("valor");
+  const iEquipamento = idx("equipamento");
+  const iTipo = idx("tipo");
+  const iKva = idx("kva");
+  const iArea = idx("area");
   const iStatus = idx("status");
 
   // "Valor Unitário" precisa ser multiplicado pela quantidade; "Valor Total"
@@ -830,8 +1176,12 @@ export function mapRowsToPedidos(
 
   return table.rows.map((r) => {
     const rawStatus = iStatus >= 0 ? r[iStatus] : "";
-    const dataInicio = iDataInicio >= 0 ? r[iDataInicio] : "";
-    const dataFim = iDataFim >= 0 ? r[iDataFim] : "";
+    // a coluna pode vir como "13/07/2026 17:13" — a hora embutida só é
+    // aproveitada quando a planilha não tem coluna de hora própria
+    const inicio = separarDataHora(iDataInicio >= 0 ? r[iDataInicio] : "");
+    const fim = separarDataHora(iDataFim >= 0 ? r[iDataFim] : "");
+    const dataInicio = inicio.data;
+    const dataFim = fim.data;
     // sem coluna de dias, tenta deduzir do intervalo de datas antes de desistir.
     const dias =
       (iDias >= 0 && r[iDias] ? parseQuantidade(r[iDias]) : null) ??
@@ -847,12 +1197,14 @@ export function mapRowsToPedidos(
       estande: estandeDaLinha(r),
       localizacao: localizacaoDaLinha(r),
       tipoEstande: iTipoEstande >= 0 ? r[iTipoEstande] : "",
+      equipamento: iEquipamento >= 0 ? r[iEquipamento] : "",
+      tipo: iTipo >= 0 ? r[iTipo] : "",
       quantidade,
       dias,
       dataInicio,
       dataFim,
-      horaInicio: iHoraInicio >= 0 ? r[iHoraInicio] : "",
-      horaFim: iHoraFim >= 0 ? r[iHoraFim] : "",
+      horaInicio: (iHoraInicio >= 0 ? r[iHoraInicio] : "") || inicio.hora,
+      horaFim: (iHoraFim >= 0 ? r[iHoraFim] : "") || fim.hora,
       turno: iTurno >= 0 ? r[iTurno] : "",
       valor:
         iValor >= 0 && r[iValor]
@@ -860,6 +1212,9 @@ export function mapRowsToPedidos(
             ? parseValor(r[iValor]) * quantidade
             : parseValor(r[iValor])
           : null,
+      // "1.520,00" no formato BR — mesmo leitor do campo de valor
+      kva: iKva >= 0 && r[iKva] ? parseValor(r[iKva]) : null,
+      area: iArea >= 0 && r[iArea] ? parseValor(r[iArea]) : null,
       status: statusMapping[rawStatus] ?? "pendente",
       sourceFile,
     };
@@ -913,17 +1268,31 @@ export function aggregateOperacional(pedidos: PedidoServico[]): OperacionalData 
 
   // quantos itens cada tipo de estande contratou — é a leitura que o
   // operacional usa para dimensionar equipe e material por perfil de estande.
+  // soma da potência: linha sem kVA fica fora, e sem nenhuma linha com o dado
+  // o KPI nem aparece na tela
+  const comKva = ativos.filter((p) => p.kva != null);
+  const kvaTotal = comKva.length ? comKva.reduce((s, p) => s + (p.kva as number), 0) : null;
+
   const tipoTotals = new Map<string, number>();
   for (const p of ativos) {
     const tipo = tipoEstandeAgrupado(p.tipoEstande);
     if (tipo) tipoTotals.set(tipo, (tipoTotals.get(tipo) ?? 0) + p.quantidade);
   }
 
+  // equipamento e variação seguem o mesmo agrupamento por escrita do tipo de
+  // estande: "Câmera de Monitoramento" e "CAMERA DE MONITORAMENTO" são um item só
+  const somarPor = (get: (p: PedidoServico) => string) => {
+    const m = new Map<string, number>();
+    for (const p of ativos) {
+      const chave = tipoEstandeAgrupado(get(p));
+      if (chave) m.set(chave, (m.get(chave) ?? 0) + p.quantidade);
+    }
+    return Array.from(m, ([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
+  };
+
   // Isenção: itens que não geram cobrança (isento + sem débito) sobre o total
   // ativo. É a leitura de quanto do serviço saiu de graça para o expositor.
-  const itensIsentos = ativos
-    .filter((p) => p.status === "isento" || p.status === "semDebito")
-    .reduce((s, p) => s + p.quantidade, 0);
+  const itensIsentos = ativos.filter((p) => p.status === "isento").reduce((s, p) => s + p.quantidade, 0);
 
   return {
     asOf: new Date().toISOString(),
@@ -931,6 +1300,7 @@ export function aggregateOperacional(pedidos: PedidoServico[]): OperacionalData 
       totalItens,
       taxaIsencao: totalItens ? (itensIsentos / totalItens) * 100 : null,
       qtdExpositores: new Set(ativos.map((p) => p.expositor).filter(Boolean)).size,
+      kvaTotal,
     },
     servicos: Array.from(servicoTotals, ([label, value]) => ({ label, value })),
     // ranking completo: a tela mostra os 10 primeiros e abre o resto sob
@@ -940,6 +1310,8 @@ export function aggregateOperacional(pedidos: PedidoServico[]): OperacionalData 
     ),
     statusBreakdown: Array.from(statusTotals, ([label, value]) => ({ label, value })),
     tiposEstande: Array.from(tipoTotals, ([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value),
+    equipamentos: somarPor((p) => p.equipamento),
+    tipos: somarPor((p) => p.tipo),
     pedidos,
   };
 }

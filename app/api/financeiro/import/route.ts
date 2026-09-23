@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireEditionModule, isResponse } from "@/lib/serverAuth";
-import type { Invoice } from "@/lib/dataSource";
+import type { Invoice, DadosIngresso } from "@/lib/dataSource";
 import { classificarOrigem } from "@/lib/spreadsheetImport";
 
 export async function GET(req: NextRequest) {
@@ -22,6 +22,7 @@ export async function GET(req: NextRequest) {
     valor: r.valor,
     status: r.status as Invoice["status"],
     quantidade: r.quantidade,
+    ingresso: (r.ingresso as DadosIngresso | null) ?? null,
     origem: r.origem,
     origemTipo: classificarOrigem(r.origem),
     centroCusto: r.centroCusto,
@@ -43,6 +44,10 @@ export async function POST(req: NextRequest) {
   const editionId = String(body?.editionId ?? "");
   const sourceFile = String(body?.sourceFile ?? "");
   const invoices: Invoice[] = Array.isArray(body?.invoices) ? body.invoices : [];
+  // "replace" (padrão) limpa as linhas anteriores do arquivo; "append" é o
+  // que os lotes seguintes usam para acrescentar sem apagar o que acabou de
+  // entrar. Ver lib/importClient.ts.
+  const modo = body?.modo === "append" ? "append" : "replace";
   if (!editionId || !sourceFile) {
     return NextResponse.json({ error: "editionId e sourceFile são obrigatórios" }, { status: 400 });
   }
@@ -50,33 +55,41 @@ export async function POST(req: NextRequest) {
   const auth = await requireEditionModule(req, editionId, "financeiro");
   if (isResponse(auth)) return auth;
 
-  // reimportar o mesmo arquivo substitui só as linhas dele — nunca duplica,
-  // nunca mexe nas linhas de outro arquivo importado pra essa edição.
-  await prisma.$transaction([
-    prisma.importedInvoice.deleteMany({ where: { editionId, sourceFile } }),
-    prisma.importedInvoice.createMany({
-      data: invoices.map((inv) => ({
-        editionId,
-        sourceFile,
-        numero: inv.numero,
-        cliente: inv.cliente,
-        cnpj: inv.cnpj,
-        vencimento: inv.vencimento,
-        pagamento: inv.pagamento,
-        forma: inv.forma,
-        valor: inv.valor,
-        status: inv.status,
-        quantidade: inv.quantidade ?? null,
-        origem: inv.origem ?? "",
-        centroCusto: inv.centroCusto ?? null,
-        conta1: inv.conta1 ?? null,
-        conta2: inv.conta2 ?? null,
-        conta3: inv.conta3 ?? null,
-      })),
-    }),
-  ]);
+  // Só o primeiro lote apaga o que existia deste arquivo — reimportar
+  // substitui, sem duplicar e sem tocar nas linhas de outros arquivos.
+  if (modo === "replace") {
+    await prisma.importedInvoice.deleteMany({ where: { editionId, sourceFile } });
+  }
 
-  return NextResponse.json({ ok: true, count: invoices.length });
+  const registros = invoices.map((inv) => ({
+    editionId,
+    sourceFile,
+    numero: inv.numero,
+    cliente: inv.cliente,
+    cnpj: inv.cnpj,
+    vencimento: inv.vencimento,
+    pagamento: inv.pagamento,
+    forma: inv.forma,
+    valor: inv.valor,
+    status: inv.status,
+    quantidade: inv.quantidade ?? null,
+    ingresso: inv.ingresso ?? undefined,
+    origem: inv.origem ?? "",
+    centroCusto: inv.centroCusto ?? null,
+    conta1: inv.conta1 ?? null,
+    conta2: inv.conta2 ?? null,
+    conta3: inv.conta3 ?? null,
+  }));
+
+  // Inserção fatiada: cada createMany é uma ida ao banco, então o tamanho é
+  // um meio-termo medido — 500 levava 16s para 10 mil linhas (21 chamadas),
+  // 3000 leva 5s (4 chamadas).
+  const TAMANHO = 3000;
+  for (let i = 0; i < registros.length; i += TAMANHO) {
+    await prisma.importedInvoice.createMany({ data: registros.slice(i, i + TAMANHO) });
+  }
+
+  return NextResponse.json({ ok: true, count: registros.length });
 }
 
 export async function DELETE(req: NextRequest) {
