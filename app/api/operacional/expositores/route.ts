@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireEditionModule, isResponse } from "@/lib/serverAuth";
 import type { ExpositorBase } from "@/lib/dataSource";
+import { respostaCacheada, guardarResposta, invalidarCache } from "@/lib/serverCache";
 
 /**
  * Listagem geral de expositores da edição. Fica separada das planilhas de
@@ -15,7 +16,22 @@ export async function GET(req: NextRequest) {
   const auth = await requireEditionModule(req, editionId, "operacional");
   if (isResponse(auth)) return auth;
 
-  const rows = await prisma.importedExpositor.findMany({ where: { editionId } });
+  const cacheada = respostaCacheada("expositores", editionId);
+  if (cacheada) return cacheada;
+
+  const rows = await prisma.importedExpositor.findMany({
+    where: { editionId },
+    select: {
+      expositor: true,
+      nomeFantasia: true,
+      cnpj: true,
+      estande: true,
+      localizacao: true,
+      tipoEstande: true,
+      area: true,
+      sourceFile: true,
+    },
+  });
   const expositores: ExpositorBase[] = rows.map((r) => ({
     expositor: r.expositor,
     nomeFantasia: r.nomeFantasia,
@@ -26,7 +42,7 @@ export async function GET(req: NextRequest) {
     area: r.area,
     sourceFile: r.sourceFile,
   }));
-  return NextResponse.json(expositores);
+  return guardarResposta("expositores", editionId, expositores);
 }
 
 export async function POST(req: NextRequest) {
@@ -66,6 +82,9 @@ export async function POST(req: NextRequest) {
     await prisma.importedExpositor.createMany({ data: registros.slice(i, i + TAMANHO) });
   }
 
+  // a escrita muda o que a leitura devolve: sem isso, quem importou veria
+  // a tela antiga até o TTL do cache vencer
+  invalidarCache("expositores", editionId);
   return NextResponse.json({ ok: true, count: registros.length });
 }
 
@@ -77,5 +96,6 @@ export async function DELETE(req: NextRequest) {
   if (isResponse(auth)) return auth;
 
   await prisma.importedExpositor.deleteMany({ where: { editionId } });
+  invalidarCache("expositores", editionId);
   return NextResponse.json({ ok: true });
 }

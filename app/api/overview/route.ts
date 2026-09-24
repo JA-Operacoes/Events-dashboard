@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireEditionAccess, isResponse } from "@/lib/serverAuth";
+import { respostaCacheada, guardarResposta } from "@/lib/serverCache";
 
 /**
  * Resumo da edição para a visão geral: quantas linhas cada módulo tem, quando
@@ -15,6 +16,9 @@ export async function GET(req: NextRequest) {
 
   const auth = await requireEditionAccess(req, editionId);
   if (isResponse(auth)) return auth;
+
+  const cacheada = respostaCacheada("overview", editionId);
+  if (cacheada) return cacheada;
 
   const where = { editionId };
 
@@ -40,7 +44,7 @@ export async function GET(req: NextRequest) {
       .map((l) => ({ data: String(l[campo] ?? "").trim(), registros: l._count._all }))
       .filter((l) => l.data !== "");
 
-  return NextResponse.json({
+  return guardarResposta("overview", editionId, {
     modulos: {
       financeiro: { registros: invoices._count._all, atualizadoEm: invoices._max.createdAt },
       credenciamento: { registros: participantes._count._all, atualizadoEm: participantes._max.createdAt },

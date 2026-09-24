@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireEditionModule, isResponse } from "@/lib/serverAuth";
 import type { PedidoServico } from "@/lib/dataSource";
+import { respostaCacheada, guardarResposta, invalidarCache } from "@/lib/serverCache";
 
 export async function GET(req: NextRequest) {
   const editionId = req.nextUrl.searchParams.get("editionId");
@@ -10,7 +11,36 @@ export async function GET(req: NextRequest) {
   const auth = await requireEditionModule(req, editionId, "operacional");
   if (isResponse(auth)) return auth;
 
-  const rows = await prisma.importedServico.findMany({ where: { editionId } });
+  const cacheada = respostaCacheada("operacional", editionId);
+  if (cacheada) return cacheada;
+
+  const rows = await prisma.importedServico.findMany({
+    where: { editionId },
+    select: {
+      servico: true,
+      expositor: true,
+      nomeFantasia: true,
+      cnpj: true,
+      estande: true,
+      localizacao: true,
+      tipoEstande: true,
+      quantidade: true,
+      dias: true,
+      dataInicio: true,
+      dataFim: true,
+      horaInicio: true,
+      horaFim: true,
+      turno: true,
+      valor: true,
+      kva: true,
+      area: true,
+      equipamento: true,
+      tipo: true,
+      status: true,
+      sourceFile: true,
+      createdAt: true,
+    },
+  });
   const pedidos: PedidoServico[] = rows.map((r) => ({
     servico: r.servico,
     expositor: r.expositor,
@@ -37,9 +67,12 @@ export async function GET(req: NextRequest) {
   // exposto via header (não no corpo) pra não quebrar o contrato
   // `PedidoServico[]` que o resto do app já espera dessa rota.
   const lastUpdatedAt = rows.reduce((max, r) => (r.createdAt > max ? r.createdAt : max), new Date(0));
-  const res = NextResponse.json(pedidos);
-  if (rows.length) res.headers.set("X-Last-Updated", lastUpdatedAt.toISOString());
-  return res;
+  return guardarResposta(
+    "operacional",
+    editionId,
+    pedidos,
+    rows.length ? { "X-Last-Updated": lastUpdatedAt.toISOString() } : {}
+  );
 }
 
 export async function POST(req: NextRequest) {
@@ -97,6 +130,9 @@ export async function POST(req: NextRequest) {
     await prisma.importedServico.createMany({ data: registros.slice(i, i + TAMANHO) });
   }
 
+  // a escrita muda o que a leitura devolve: sem isso, quem importou veria
+  // a tela antiga até o TTL do cache vencer
+  invalidarCache("operacional", editionId);
   return NextResponse.json({ ok: true, count: registros.length });
 }
 
@@ -111,5 +147,6 @@ export async function DELETE(req: NextRequest) {
   if (isResponse(auth)) return auth;
 
   await prisma.importedServico.deleteMany({ where: { editionId, sourceFile } });
+  invalidarCache("operacional", editionId);
   return NextResponse.json({ ok: true });
 }

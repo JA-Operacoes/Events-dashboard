@@ -255,7 +255,7 @@ body {
   flex: 1; font-family: var(--mono); font-size: 11px; font-weight: 700; color: var(--ink-mute);
   background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 0; cursor: pointer;
 }
-.edition-pill.on { color: #fff; background: var(--accent); border-color: transparent; }
+.edition-pill.on { color: var(--ink); background: var(--bg); border-color: transparent; }
 
 .rail nav { display: flex; flex-direction: column; gap: 2px; }
 .rail nav a { text-decoration: none; }
@@ -550,6 +550,28 @@ body {
 .lista-simples li:last-child { border-bottom: none; }
 .lista-simples-nome { color: var(--ink-dim); overflow-wrap: anywhere; }
 .lista-simples-extra { color: var(--ink-mute); font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
+
+/* Resumo do cálculo de energia no cabeçalho do painel: contratado, incluso,
+   excedente e quanto isso dá em dinheiro. */
+.energia-resumo { display: flex; gap: 18px; flex-wrap: wrap; justify-content: flex-end; }
+.energia-resumo span { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.energia-resumo em { font-style: normal; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-mute); }
+.energia-resumo strong { font-family: var(--mono); font-size: 14px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.energia-resumo-valor strong { color: var(--accent); }
+
+/* Tabela dentro de um painel (não é a tabela principal da tela): mesma
+   linguagem, sem a moldura própria. */
+.tabela-simples { width: 100%; border-collapse: collapse; font-size: 12px; }
+.tabela-simples thead th {
+  position: sticky; top: 0; z-index: 1; background: var(--panel);
+  text-align: left; padding: 6px 10px; font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: .04em; color: var(--ink-mute); border-bottom: 1px solid var(--line);
+}
+.tabela-simples tbody td { padding: 7px 10px; border-bottom: 1px solid var(--line-soft); color: var(--ink-dim); font-family: var(--mono); }
+.tabela-simples tbody tr:last-child td { border-bottom: none; }
+/* estande sem excedente: continua na lista para conferência, mas sem disputar
+   atenção com quem tem valor a cobrar */
+.tabela-simples .linha-apagada td { opacity: .55; }
 /* o SVG mantém a proporção (esticá-lo deformaria os rótulos); o wrapper é que
    cresce e o centraliza na sobra de altura */
 .chart-wrap { position: relative; display: flex; align-items: center; }
@@ -633,7 +655,28 @@ body {
 .status-left { display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--ink-dim); }
 .status-val { font-family: var(--mono); font-size: 12.5px; color: var(--ink-mute); }
 
-.table-wrap { border: 1px solid var(--line); border-radius: 13px; background: var(--panel); overflow: hidden; }
+.table-wrap { border: 1px solid var(--line); border-radius: 13px; background: var(--panel); overflow: hidden; position: relative; }
+
+/* Aviso enquanto a lista completa é montada. Cobre a tabela em vez de ficar só
+   no botão: o que a pessoa olha é a tabela, e é ela que parece travada. */
+.tabela-loading {
+  position: absolute; inset: 0; z-index: 3;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  background: color-mix(in srgb, var(--panel) 86%, transparent);
+  backdrop-filter: blur(2px); text-align: center; padding: 20px;
+}
+.tabela-loading strong { font-size: 13px; color: var(--ink); }
+.tabela-loading span:not(.tabela-loading-spinner) { font-size: 11.5px; color: var(--ink-mute); font-family: var(--mono); }
+.tabela-loading-spinner {
+  width: 22px; height: 22px; border-radius: 50%;
+  border: 2px solid var(--line); border-top-color: var(--accent);
+  animation: girar .7s linear infinite;
+}
+@keyframes girar { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .tabela-loading-spinner { animation-duration: 2.4s; } }
+/* enquanto monta, a tabela não aceita clique: evita disparar outro recálculo
+   por cima do que já está acontecendo */
+.table-wrap-carregando .table-scroll { pointer-events: none; }
 /* altura limitada para o cabeçalho sticky ter contra o que grudar: rolando
    uma lista longa, os nomes das colunas continuam à vista */
 .table-scroll { overflow: auto; overscroll-behavior-x: contain; max-height: 70vh; }
@@ -655,6 +698,22 @@ th.num .th-sort { justify-content: flex-end; }
 .th-sort:hover .th-sort-arrow { opacity: 1; }
 tbody td { padding: 12px 14px; border-bottom: 1px solid var(--line-soft); color: var(--ink-dim); font-family: var(--mono); }
 tbody tr { transition: background .12s; }
+/* A tabela é virtualizada (lib/virtual.ts): o cálculo da janela assume que toda
+   linha tem exatamente esta altura — 46px, o mesmo valor de ALTURA_LINHA_TABELA. */
+.table-scroll tbody tr { height: 46px; }
+.table-scroll tbody td { padding: 6px 14px; }
+/* Nome longo ocupa no máximo duas linhas: mais que isso mudaria a altura da
+   linha e a janela virtual sairia do lugar. O corte é no span, nunca no <td> —
+   mudar o display da célula a tira do layout de tabela e quebra o alinhamento
+   das colunas inteiras. */
+.td-nome-texto {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  overflow: hidden; line-height: 1.25;
+}
+/* espaçadoras não têm conteúdo nem borda: existem só para ocupar a altura das
+   linhas que estão fora da janela */
+.linha-espacadora td { padding: 0; border: none; }
+.linha-espacadora:hover { background: none; }
 tbody tr:hover { background: var(--panel-2); }
 tbody tr:last-child td { border-bottom: none; }
 td.num, th.num { text-align: right; }

@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { requireEditionModule, isResponse } from "@/lib/serverAuth";
 import type { Invoice, DadosIngresso } from "@/lib/dataSource";
 import { classificarOrigem } from "@/lib/spreadsheetImport";
+import { respostaCacheada, guardarResposta, invalidarCache } from "@/lib/serverCache";
 
 export async function GET(req: NextRequest) {
   const editionId = req.nextUrl.searchParams.get("editionId");
@@ -11,7 +12,34 @@ export async function GET(req: NextRequest) {
   const auth = await requireEditionModule(req, editionId, "financeiro");
   if (isResponse(auth)) return auth;
 
-  const rows = await prisma.importedInvoice.findMany({ where: { editionId } });
+  const cacheada = respostaCacheada("financeiro", editionId);
+  if (cacheada) return cacheada;
+
+  // select explícito: a tabela tem colunas que esta tela não usa, e cada uma
+  // delas atravessa a rede. Medido: 6,38 MB e ~3,9s com tudo; 2,15 MB e ~1,9s
+  // só com o que é lido aqui.
+  const rows = await prisma.importedInvoice.findMany({
+    where: { editionId },
+    select: {
+      numero: true,
+      cliente: true,
+      cnpj: true,
+      vencimento: true,
+      pagamento: true,
+      forma: true,
+      valor: true,
+      status: true,
+      quantidade: true,
+      ingresso: true,
+      origem: true,
+      centroCusto: true,
+      conta1: true,
+      conta2: true,
+      conta3: true,
+      sourceFile: true,
+      createdAt: true,
+    },
+  });
   const invoices: Invoice[] = rows.map((r) => ({
     numero: r.numero,
     cliente: r.cliente,
@@ -39,9 +67,12 @@ export async function GET(req: NextRequest) {
   // exposto via header (não no corpo) pra não quebrar o contrato `Invoice[]`
   // que o resto do app já espera dessa rota.
   const lastUpdatedAt = rows.reduce((max, r) => (r.createdAt > max ? r.createdAt : max), new Date(0));
-  const res = NextResponse.json(invoices);
-  if (rows.length) res.headers.set("X-Last-Updated", lastUpdatedAt.toISOString());
-  return res;
+  return guardarResposta(
+    "financeiro",
+    editionId,
+    invoices,
+    rows.length ? { "X-Last-Updated": lastUpdatedAt.toISOString() } : {}
+  );
 }
 
 export async function POST(req: NextRequest) {
@@ -94,6 +125,9 @@ export async function POST(req: NextRequest) {
     await prisma.importedInvoice.createMany({ data: registros.slice(i, i + TAMANHO) });
   }
 
+  // a escrita muda o que a leitura devolve: sem isso, quem importou veria
+  // a tela antiga até o TTL do cache vencer
+  invalidarCache("financeiro", editionId);
   return NextResponse.json({ ok: true, count: registros.length });
 }
 
@@ -108,5 +142,6 @@ export async function DELETE(req: NextRequest) {
   if (isResponse(auth)) return auth;
 
   await prisma.importedInvoice.deleteMany({ where: { editionId, sourceFile } });
+  invalidarCache("financeiro", editionId);
   return NextResponse.json({ ok: true });
 }

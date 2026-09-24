@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useDeferredValue } from "react";
+import { useEffect, useMemo, useState, useDeferredValue, useTransition, useRef } from "react";
 import { useEvent } from "@/lib/eventContext";
 import { useI18n } from "@/lib/i18n";
 import { useAuth } from "@/lib/auth";
@@ -22,6 +22,7 @@ import {
 } from "@/lib/spreadsheetImport";
 import { Donut, BarList, StatusBars, PALETTE } from "@/components/charts";
 import { getCached, setCached } from "@/lib/pageCache";
+import { useJanelaVirtual, ALTURA_LINHA_TABELA } from "@/lib/virtual";
 import { combina } from "@/lib/busca";
 import { enviarImportEmLotes } from "@/lib/importClient";
 import { formatRelativeTime, parseDateLoose } from "@/lib/period";
@@ -194,6 +195,10 @@ export default function OperacionalPage() {
   // expositor — e obriga a decorar em que página estava.
   const LINHAS_POR_VEZ = 50;
   const [linhasVisiveis, setLinhasVisiveis] = useState(LINHAS_POR_VEZ);
+  // Abrir a lista inteira monta milhares de linhas de uma vez. Em transição, o
+  // React continua respondendo a cliques enquanto monta, em vez de congelar a
+  // aba até terminar.
+  const [montandoLinhas, iniciarMontagem] = useTransition();
 
   const [sortKey, setSortKey] = useState<keyof PedidoServico | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
@@ -314,6 +319,16 @@ export default function OperacionalPage() {
     [sortedPedidos, linhasVisiveis]
   );
   const faltamLinhas = Math.max(0, visiblePedidos.length - linhasDaPagina.length);
+
+
+
+  // Tabela virtualizada: só as linhas visíveis existem no DOM. Sem isso, abrir
+  // a lista inteira monta dezenas de milhares de células e a rolagem trava
+  // mesmo depois de montada.
+  const areaTabela = useRef<HTMLDivElement>(null);
+  const janela = useJanelaVirtual(areaTabela, linhasDaPagina.length, ALTURA_LINHA_TABELA);
+  const linhasNaTela = linhasDaPagina.slice(janela.inicio, janela.fim);
+  const colunasTabela = COLUMNS.length;
 
   const importedFiles = Array.from(
     importedPedidos.reduce((map, p) => {
@@ -527,6 +542,10 @@ export default function OperacionalPage() {
   // quantidades são contagens de pessoas/itens, não dinheiro — o formatador
   // padrão dos gráficos é moeda, então todos recebem este aqui.
   const qtdFmt = (v: number) => v.toLocaleString("pt-BR");
+  // kVA e área saem fracionados (0,11 × m²) — duas casas, sem zeros à toa
+  const kvaFmt = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: 2 });
+  // quantos estandes de fato passaram da franquia — é o que a equipe cobra
+  const estandesComExcedente = (data?.energia?.linhas ?? []).filter((l) => (l.kvaExtra ?? 0) > 0).length;
 
   /**
    * Exporta a lista como ela está: mesmos filtros, mesma ordenação e as mesmas
@@ -883,6 +902,86 @@ export default function OperacionalPage() {
           </div>
         )}
 
+        {data?.energia && (
+          <div className="panel panel-largo">
+            <div className="panel-head">
+              <div>
+                <h3>Energia elétrica por estande</h3>
+                <p>
+                  contrato inclui {data.energia.kvaPorM2.toLocaleString("pt-BR", { minimumFractionDigits: 2 })} kVA/m² ·
+                  excedente arredondado para cima · kVA extra a {money(data.energia.valorPorKva)}
+                </p>
+              </div>
+              {/* O total de "incluso" saiu daqui de propósito: ele soma a franquia
+                  de todos os estandes da lista, inclusive os que não pediram
+                  energia, então podia aparecer maior que o contratado e parecer
+                  contradição. A franquia continua na tabela, ao lado do estande
+                  a que pertence, que é onde ela significa alguma coisa. */}
+              <div className="energia-resumo">
+                <span>
+                  <em>kVA contratado</em>
+                  <strong>{kvaFmt(data.energia.totalContratado)} kVA</strong>
+                </span>
+                <span>
+                  <em>estandes com excedente</em>
+                  <strong>
+                    {estandesComExcedente.toLocaleString("pt-BR")} de{" "}
+                    {data.energia.linhas.length.toLocaleString("pt-BR")}
+                  </strong>
+                </span>
+                <span>
+                  <em>extra a cobrar</em>
+                  <strong>{kvaFmt(data.energia.totalExtra)} kVA</strong>
+                </span>
+                <span className="energia-resumo-valor">
+                  <em>valor do excedente</em>
+                  <strong>{money(data.energia.valorTotalExtra)}</strong>
+                </span>
+              </div>
+            </div>
+
+            {data.energia.semArea > 0 && (
+              <p className="ranking-vazio">
+                {data.energia.semArea.toLocaleString("pt-BR")} estande(s) sem área informada ficaram fora do cálculo —
+                mapeie a coluna de área no import para incluí-los.
+              </p>
+            )}
+
+            {/* a lista rola dentro do card: numa elétrica geral são centenas de
+                estandes, e o interesse está nos primeiros (maior excedente) */}
+            <div className="ranking-lista barlist-scroll scroll-slim">
+              <table className="tabela-simples">
+                <thead>
+                  <tr>
+                    <th>Estande</th>
+                    <th>Expositor</th>
+                    <th className="num">Área (m²)</th>
+                    <th className="num">Contratado</th>
+                    <th className="num">Incluso</th>
+                    <th className="num">Extra</th>
+                    <th className="num">Valor</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.energia.linhas.map((l) => (
+                    <tr key={`${l.estande}-${l.expositor}`} className={l.kvaExtra ? "" : "linha-apagada"}>
+                      <td>{l.estande}</td>
+                      <td className="td-nome">
+                        <span className="td-nome-texto">{l.expositor}</span>
+                      </td>
+                      <td className="num">{l.area != null ? kvaFmt(l.area) : "—"}</td>
+                      <td className="num">{kvaFmt(l.kvaContratado)}</td>
+                      <td className="num">{l.kvaIncluso != null ? kvaFmt(l.kvaIncluso) : "—"}</td>
+                      <td className="num">{l.kvaExtra != null ? l.kvaExtra.toLocaleString("pt-BR") : "—"}</td>
+                      <td className="num">{l.valorExtra ? money(l.valorExtra) : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
         {(data?.equipamentos.length ?? 0) > 0 && (
           <div className="panel">
             <div className="panel-head">
@@ -951,7 +1050,16 @@ export default function OperacionalPage() {
         </div>
       </div>
 
-      <div className="table-wrap">
+      <div className={`table-wrap ${montandoLinhas ? "table-wrap-carregando" : ""}`}>
+        {/* Montar milhares de linhas leva alguns segundos e, sem aviso, a tela
+            parece travada — é o tipo de coisa que vira "o sistema deu problema". */}
+        {montandoLinhas && (
+          <div className="tabela-loading" role="status" aria-live="polite">
+            <span className="tabela-loading-spinner" aria-hidden="true" />
+            <strong>Carregando serviços…</strong>
+            <span>montando a lista completa — pode levar alguns segundos</span>
+          </div>
+        )}
         <div className="panel-head" style={{ padding: "16px 16px 0" }}>
           <div>
             <h3>{t("operacional.table.title")}</h3>
@@ -1032,7 +1140,7 @@ export default function OperacionalPage() {
             )}
           </div>
         </div>
-        <div className="table-scroll scroll-slim">
+        <div className="table-scroll scroll-slim" ref={areaTabela}>
           <table>
             <thead>
               <tr>
@@ -1066,11 +1174,17 @@ export default function OperacionalPage() {
                   }
                 />
               ) : (
-                linhasDaPagina.map((p, i) => (
+                <>
+                  {janela.espacoAntes > 0 && (
+                    <tr aria-hidden="true" className="linha-espacadora" style={{ height: janela.espacoAntes }}>
+                      <td colSpan={colunasTabela} />
+                    </tr>
+                  )}
+                  {linhasNaTela.map((p, i) => (
                   // um mesmo expositor pede o mesmo serviço em linhas separadas
                   // (uma por variação, ex.: monolíngue e bilíngue), então não há
                   // identificador natural de linha — o índice garante a unicidade.
-                  <tr key={`${p.sourceFile}-${p.expositor}-${i}`}>
+                  <tr key={`${p.sourceFile}-${p.expositor}-${janela.inicio + i}`}>
                     {COLUMNS.map(({ key, cls, format }) => {
                       if (key === "status") {
                         return (
@@ -1087,7 +1201,7 @@ export default function OperacionalPage() {
                           // razão social costuma ser longa: quebra em vez de
                           // sumir num corte com "…"
                           <td key={key} className="td-nome">
-                            {p.expositor}
+                            <span className="td-nome-texto">{p.expositor}</span>
                           </td>
                         );
                       }
@@ -1103,7 +1217,13 @@ export default function OperacionalPage() {
                       );
                     })}
                   </tr>
-                ))
+                  ))}
+                  {janela.espacoDepois > 0 && (
+                    <tr aria-hidden="true" className="linha-espacadora" style={{ height: janela.espacoDepois }}>
+                      <td colSpan={colunasTabela} />
+                    </tr>
+                  )}
+                </>
               )}
             </tbody>
           </table>
@@ -1139,13 +1259,25 @@ export default function OperacionalPage() {
               </button>
             )}
             {faltamLinhas > 0 && (
-              <button
-                className="btn primary btn-mostrar-mais"
-                type="button"
-                onClick={() => setLinhasVisiveis((n) => n + LINHAS_POR_VEZ)}
-              >
-                Mostrar mais {Math.min(LINHAS_POR_VEZ, faltamLinhas)} ({faltamLinhas.toLocaleString("pt-BR")} restantes)
-              </button>
+              <>
+                <button
+                  className="btn primary btn-mostrar-mais"
+                  type="button"
+                  onClick={() => iniciarMontagem(() => setLinhasVisiveis((n) => n + LINHAS_POR_VEZ))}
+                >
+                  Mostrar mais {Math.min(LINHAS_POR_VEZ, faltamLinhas)} ({faltamLinhas.toLocaleString("pt-BR")} restantes)
+                </button>
+                {/* de 50 em 50 é lento quando a pessoa quer conferir a lista
+                    inteira ou rolar até o fim */}
+                <button
+                  className="btn btn-mostrar-menos"
+                  type="button"
+                  onClick={() => iniciarMontagem(() => setLinhasVisiveis(visiblePedidos.length))}
+                  disabled={montandoLinhas}
+                >
+                  {montandoLinhas ? "Montando a lista…" : `Ver todos (${visiblePedidos.length.toLocaleString("pt-BR")})`}
+                </button>
+              </>
             )}
           </span>
         </div>

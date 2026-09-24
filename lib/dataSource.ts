@@ -260,6 +260,35 @@ export type ExpositorBase = {
   sourceFile: string;
 };
 
+/** Linha do cálculo de energia de um estande. */
+export type EstandeEnergia = {
+  estande: string;
+  expositor: string;
+  /** Área em m² usada no cálculo do incluso. */
+  area: number | null;
+  /** Soma do kVA pedido nas linhas daquele estande. */
+  kvaContratado: number;
+  /** 0,11 kVA/m² — o que o contrato de participação já cobre. */
+  kvaIncluso: number | null;
+  /** Excedente já arredondado para a unidade inteira acima, como o contrato prevê. */
+  kvaExtra: number | null;
+  /** kvaExtra × valor do kVA extra. */
+  valorExtra: number | null;
+};
+
+export type EnergiaPorEstande = {
+  linhas: EstandeEnergia[];
+  /** kVA/m² incluídos no contrato de participação. */
+  kvaPorM2: number;
+  valorPorKva: number;
+  totalContratado: number;
+  totalIncluso: number;
+  totalExtra: number;
+  valorTotalExtra: number;
+  /** Estandes sem área informada — ficam de fora do cálculo e são avisados na tela. */
+  semArea: number;
+};
+
 export type OperacionalData = {
   asOf: string | null;
   kpis: {
@@ -292,6 +321,13 @@ export type OperacionalData = {
   equipamentos: Array<{ name: string; value: number }>;
   /** Itens por variação/tipo do item — vazio quando a planilha não tem a coluna. */
   tipos: Array<{ name: string; value: number }>;
+  /**
+   * Energia elétrica por estande: o que o contrato já inclui (0,11 kVA/m²),
+   * o que foi contratado e quanto disso é excedente a cobrar. Nulo quando as
+   * planilhas não trazem kVA e área — é o caso de todo serviço que não seja
+   * o relatório de elétrica.
+   */
+  energia: EnergiaPorEstande | null;
   /**
    * Expositores da listagem geral sem nenhum serviço contratado. Vazio quando
    * a listagem não foi importada.

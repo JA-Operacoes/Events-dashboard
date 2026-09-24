@@ -386,7 +386,9 @@ export default function CredenciamentoPage() {
                   // mesmo raciocínio do Financeiro: documento pode se repetir se a
                   // pessoa aparecer em mais de uma planilha/arquivo importado.
                   <tr key={`${p.documento}-${i}`}>
-                    <td className="td-nome">{p.nome}</td>
+                    <td className="td-nome">
+                      <span className="td-nome-texto">{p.nome}</span>
+                    </td>
                     <td>{p.documento}</td>
                     <td>{p.categoria}</td>
                     <td>{p.credenciadoEm || "—"}</td>
@@ -410,7 +412,6 @@ export default function CredenciamentoPage() {
         </div>
       </div>
 
-      <div className="footnote">{t("credenciamento.footnote")}</div>
     </>
   );
 }

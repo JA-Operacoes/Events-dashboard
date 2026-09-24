@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireEditionModule, isResponse } from "@/lib/serverAuth";
 import type { Participante } from "@/lib/dataSource";
+import { respostaCacheada, guardarResposta, invalidarCache } from "@/lib/serverCache";
 
 export async function GET(req: NextRequest) {
   const editionId = req.nextUrl.searchParams.get("editionId");
@@ -10,7 +11,35 @@ export async function GET(req: NextRequest) {
   const auth = await requireEditionModule(req, editionId, "credenciamento");
   if (isResponse(auth)) return auth;
 
-  const rows = await prisma.importedParticipante.findMany({ where: { editionId } });
+  const cacheada = respostaCacheada("credenciamento", editionId);
+  if (cacheada) return cacheada;
+
+  // só as colunas lidas abaixo: id e timestamps de escrita não são usados pela
+  // tela e atravessariam a rede em cada linha
+  const rows = await prisma.importedParticipante.findMany({
+    where: { editionId },
+    select: {
+      nome: true,
+      documento: true,
+      categoria: true,
+      credenciadoEm: true,
+      checkinEm: true,
+      status: true,
+      valor: true,
+      statusPagamento: true,
+      compareceu: true,
+      valorDevido: true,
+      convite: true,
+      cargo: true,
+      segmento: true,
+      estado: true,
+      pais: true,
+      dataComparecimento: true,
+      horaComparecimento: true,
+      sourceFile: true,
+      createdAt: true,
+    },
+  });
   const participantes: Participante[] = rows.map((r) => ({
     nome: r.nome,
     documento: r.documento,
@@ -40,9 +69,12 @@ export async function GET(req: NextRequest) {
     sourceFile: r.sourceFile,
   }));
   const lastUpdatedAt = rows.reduce((max, r) => (r.createdAt > max ? r.createdAt : max), new Date(0));
-  const res = NextResponse.json(participantes);
-  if (rows.length) res.headers.set("X-Last-Updated", lastUpdatedAt.toISOString());
-  return res;
+  return guardarResposta(
+    "credenciamento",
+    editionId,
+    participantes,
+    rows.length ? { "X-Last-Updated": lastUpdatedAt.toISOString() } : {}
+  );
 }
 
 export async function POST(req: NextRequest) {
@@ -97,6 +129,9 @@ export async function POST(req: NextRequest) {
     await prisma.importedParticipante.createMany({ data: registros.slice(i, i + TAMANHO) });
   }
 
+  // a escrita muda o que a leitura devolve: sem isso, quem importou veria
+  // a tela antiga até o TTL do cache vencer
+  invalidarCache("credenciamento", editionId);
   return NextResponse.json({ ok: true, count: registros.length });
 }
 
@@ -111,5 +146,6 @@ export async function DELETE(req: NextRequest) {
   if (isResponse(auth)) return auth;
 
   await prisma.importedParticipante.deleteMany({ where: { editionId, sourceFile } });
+  invalidarCache("credenciamento", editionId);
   return NextResponse.json({ ok: true });
 }

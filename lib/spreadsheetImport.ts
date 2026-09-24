@@ -16,6 +16,8 @@ import * as XLSX from "xlsx";
 import { parseDateLoose, separarDataHora } from "./period";
 import * as cptable from "xlsx/dist/cpexcel.full.mjs";
 import type {
+  EnergiaPorEstande,
+  EstandeEnergia,
   ExpositorBase,
   FinanceiroData,
   Invoice,
@@ -509,8 +511,8 @@ export function mergeImportedInvoices(existing: Invoice[], incoming: Invoice[], 
 }
 
 export function aggregateFinanceiro(invoices: Invoice[]): FinanceiroData {
-  const totalRecebido = invoices.filter((i) => i.status === "pago").reduce((s, i) => s + i.valor, 0);
   const pagos = invoices.filter((i) => i.status === "pago");
+  const totalRecebido = pagos.reduce((s, i) => s + i.valor, 0);
   const ticketMedio = pagos.length ? totalRecebido / pagos.length : 0;
 
   const methodTotals = new Map<string, number>();
@@ -1490,6 +1492,80 @@ export function tipoEstandeAgrupado(valor: string | null | undefined): string {
     .join(" ");
 }
 
+/**
+ * Energia inclusa no contrato de participação: 0,11 kVA por m² de estande.
+ * Está no regulamento do evento, não na planilha — por isso vive aqui, num
+ * lugar só, e aparece escrito na tela para conferência.
+ */
+export const KVA_INCLUSO_POR_M2 = 0.11;
+
+/** Preço do kVA excedente. Muda por edição; hoje é o valor da tabela vigente. */
+export const VALOR_KVA_EXTRA = 692.12;
+
+/**
+ * Cálculo de energia por estande.
+ *
+ * Regra do contrato: o expositor já tem 0,11 kVA/m², a energia é fornecida em
+ * unidade de kVA não fracionada e qualquer fração é arredondada para a unidade
+ * imediatamente acima (1,4 kVA vira 2 kVA). O arredondamento incide sobre o
+ * excedente, que é o que se cobra.
+ *
+ * A área vem repetida em todas as linhas do mesmo estande (é a área dele, não
+ * de cada item), então entra uma vez só — somá-la multiplicaria o incluso pelo
+ * número de pedidos.
+ */
+function calcularEnergia(pedidos: PedidoServico[]): EnergiaPorEstande | null {
+  const comKva = pedidos.filter((p) => p.kva != null && p.status !== "cancelado");
+  if (!comKva.length) return null;
+
+  const porEstande = new Map<string, { estande: string; expositor: string; area: number | null; kva: number }>();
+  for (const p of comKva) {
+    // sem número de estande, o expositor identifica a linha — é o que sobra
+    const chave = (p.estande || p.expositor || "—").trim().toUpperCase();
+    const atual = porEstande.get(chave);
+    if (atual) {
+      atual.kva += p.kva as number;
+      if (atual.area == null && p.area != null) atual.area = p.area;
+      if (!atual.expositor) atual.expositor = p.expositor;
+    } else {
+      porEstande.set(chave, {
+        estande: p.estande || "—",
+        expositor: p.expositor,
+        area: p.area ?? null,
+        kva: p.kva as number,
+      });
+    }
+  }
+
+  const linhas: EstandeEnergia[] = Array.from(porEstande.values()).map((e) => {
+    const kvaIncluso = e.area != null ? e.area * KVA_INCLUSO_POR_M2 : null;
+    const excedente = kvaIncluso != null ? Math.max(0, e.kva - kvaIncluso) : null;
+    const kvaExtra = excedente != null ? Math.ceil(excedente) : null;
+    return {
+      estande: e.estande,
+      expositor: e.expositor,
+      area: e.area,
+      kvaContratado: e.kva,
+      kvaIncluso,
+      kvaExtra,
+      valorExtra: kvaExtra != null ? kvaExtra * VALOR_KVA_EXTRA : null,
+    };
+  });
+
+  linhas.sort((a, b) => (b.kvaExtra ?? -1) - (a.kvaExtra ?? -1) || b.kvaContratado - a.kvaContratado);
+
+  return {
+    linhas,
+    kvaPorM2: KVA_INCLUSO_POR_M2,
+    valorPorKva: VALOR_KVA_EXTRA,
+    totalContratado: linhas.reduce((s, l) => s + l.kvaContratado, 0),
+    totalIncluso: linhas.reduce((s, l) => s + (l.kvaIncluso ?? 0), 0),
+    totalExtra: linhas.reduce((s, l) => s + (l.kvaExtra ?? 0), 0),
+    valorTotalExtra: linhas.reduce((s, l) => s + (l.valorExtra ?? 0), 0),
+    semArea: linhas.filter((l) => l.area == null).length,
+  };
+}
+
 export function aggregateOperacional(
   pedidos: PedidoServico[],
   expositoresBase: ExpositorBase[] = []
@@ -1567,6 +1643,7 @@ export function aggregateOperacional(
     tiposEstande: Array.from(tipoTotals, ([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value),
     equipamentos: somarPor((p) => p.equipamento),
     tipos: somarPor((p) => p.tipo),
+    energia: calcularEnergia(pedidos),
     expositoresSemContratacao,
     pedidos,
   };

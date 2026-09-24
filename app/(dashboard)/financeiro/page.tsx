@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, useDeferredValue } from "react";
+import { useCallback, useEffect, useMemo, useState, useDeferredValue, useTransition, useRef } from "react";
 import { useEvent } from "@/lib/eventContext";
 import { useI18n } from "@/lib/i18n";
 import { useAuth } from "@/lib/auth";
@@ -15,8 +15,9 @@ import {
 import { ConnChip, Empty, EmptyTableRow, KpiRow, money, int, pct } from "@/components/ui";
 import { SpreadsheetImportFinanceiro } from "@/components/SpreadsheetImport";
 import { aggregateFinanceiro, mergeImportedInvoices, classificarOrigem } from "@/lib/spreadsheetImport";
-import { Donut, BarList, StatusBars, LineChart } from "@/components/charts";
+import { Donut, BarList, StatusBars, LineChart, PALETTE } from "@/components/charts";
 import { getCached, setCached } from "@/lib/pageCache";
+import { useJanelaVirtual, ALTURA_LINHA_TABELA } from "@/lib/virtual";
 import { combina } from "@/lib/busca";
 import { enviarImportEmLotes } from "@/lib/importClient";
 import { matchesPeriod, normalizePaymentMethod, formatRelativeTime } from "@/lib/period";
@@ -41,6 +42,11 @@ export default function FinanceiroPage() {
   const [method, setMethod] = useState<FinanceiroFilters["method"]>("all");
   const [statusFilter, setStatusFilter] = useState<FinanceiroFilters["status"]>("all");
   const [donutVariant, setDonutVariant] = useState<"full" | "half">("full");
+  // Forma de pagamento escolhida clicando na fatia do gráfico. Guarda o texto
+  // cru da planilha (e não o método normalizado do filtro de cima): duas
+  // formas distintas podem cair no mesmo método, e clicar numa delas não pode
+  // trazer a outra junto.
+  const [formaDonut, setFormaDonut] = useState("all");
   // opcional — só faz sentido quando a planilha importada traz colunas de rateio (Conta/Conta 2/Conta 3).
   const [contaFilter, setContaFilter] = useState("all");
   const [search, setSearch] = useState("");
@@ -93,12 +99,15 @@ export default function FinanceiroPage() {
   );
 
   const aplicarFiltros = useCallback(
-    (lista: Invoice[]) => {
+    /** `ignorarOrigem` serve à barra de abas, que precisa dos números das outras origens. */
+    (lista: Invoice[], ignorarOrigem = false) => {
       const term = buscaAplicada.trim();
       return lista.filter((inv) => {
         if (statusFilter !== "all" && inv.status !== statusFilter) return false;
-        if (origem !== "all" && (inv.origemTipo ?? classificarOrigem(inv.origem)) !== origem) return false;
+        if (!ignorarOrigem && origem !== "all" && (inv.origemTipo ?? classificarOrigem(inv.origem)) !== origem)
+          return false;
         if (method !== "all" && normalizePaymentMethod(inv.forma) !== method) return false;
+        if (formaDonut !== "all" && inv.forma !== formaDonut) return false;
         if (
           contaFilter !== "all" &&
           inv.centroCusto !== contaFilter &&
@@ -114,7 +123,7 @@ export default function FinanceiroPage() {
         return true;
       });
     },
-    [statusFilter, origem, method, contaFilter, period, customRange, buscaAplicada]
+    [statusFilter, origem, method, contaFilter, period, customRange, buscaAplicada, formaDonut]
   );
 
   const filteredInvoices = useMemo(() => aplicarFiltros(rawInvoices), [rawInvoices, aplicarFiltros]);
@@ -139,15 +148,22 @@ export default function FinanceiroPage() {
   }, [rawInvoices]);
   const temOrigem = origensDisponiveis.size > 0;
 
+  /**
+   * Valor de cada aba. Segue os mesmos filtros da tela (período, forma, busca,
+   * status) e conta só o que foi pago — é a mesma leitura do cartão "Total
+   * recebido", e os dois têm de bater. A única coisa ignorada é o filtro de
+   * origem em si: senão as outras abas zerariam ao escolher uma.
+   */
   const origemTotais = useMemo(() => {
     const tot: Partial<Record<OrigemReceita, number>> = {};
-    for (const inv of rawInvoices) {
+    for (const inv of aplicarFiltros(rawInvoices, true)) {
+      if (inv.status !== "pago") continue;
       const tipo = inv.origemTipo ?? classificarOrigem(inv.origem);
       if (!tipo) continue;
       tot[tipo] = (tot[tipo] ?? 0) + inv.valor;
     }
     return tot;
-  }, [rawInvoices]);
+  }, [rawInvoices, aplicarFiltros]);
 
   // Todas as abas ficam visíveis; as que não têm receita aparecem
   // desabilitadas. Esconder as vazias fazia a barra inteira sumir quando a
@@ -205,6 +221,10 @@ export default function FinanceiroPage() {
   // ainda obriga a lembrar em que página estava.
   const LINHAS_POR_VEZ = 50;
   const [linhasVisiveis, setLinhasVisiveis] = useState(LINHAS_POR_VEZ);
+  // Abrir a lista inteira monta milhares de linhas de uma vez. Em transição, o
+  // React continua respondendo a cliques enquanto monta, em vez de congelar a
+  // aba até terminar.
+  const [montandoLinhas, iniciarMontagem] = useTransition();
 
   const [sortKey, setSortKey] = useState<keyof Invoice | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
@@ -248,7 +268,7 @@ export default function FinanceiroPage() {
 
   // Filtro novo devolve uma lista nova: continuar na página anterior mostraria
   // o meio do resultado e passava a impressão de que a busca não encontrou nada.
-  const assinaturaFiltros = `${tableSearchAplicada}|${tableStatus}|${tableForma}|${tableRange.de}|${tableRange.ate}|${buscaAplicada}|${statusFilter}|${origem}|${method}|${period}|${contaFilter}`;
+  const assinaturaFiltros = `${tableSearchAplicada}|${tableStatus}|${tableForma}|${tableRange.de}|${tableRange.ate}|${buscaAplicada}|${statusFilter}|${origem}|${method}|${period}|${contaFilter}|${formaDonut}`;
   const [filtrosAnteriores, setFiltrosAnteriores] = useState(assinaturaFiltros);
   if (filtrosAnteriores !== assinaturaFiltros) {
     // ajuste de estado durante o render, como o React recomenda para estado
@@ -261,6 +281,8 @@ export default function FinanceiroPage() {
     [sortedInvoices, linhasVisiveis]
   );
   const faltamLinhas = Math.max(0, visibleInvoices.length - linhasDaPagina.length);
+
+
 
   /**
    * Colunas da tabela. Sem vencimento: quando a duplicata vence o ERP gera
@@ -280,6 +302,29 @@ export default function FinanceiroPage() {
     return defs;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Tabela virtualizada: só as linhas visíveis existem no DOM. Sem isso, abrir
+  // a lista inteira monta dezenas de milhares de células e a rolagem trava
+  // mesmo depois de montada.
+  const areaTabela = useRef<HTMLDivElement>(null);
+  const janela = useJanelaVirtual(areaTabela, linhasDaPagina.length, ALTURA_LINHA_TABELA);
+  const linhasNaTela = linhasDaPagina.slice(janela.inicio, janela.fim);
+  const colunasTabela = COLUNAS_TABELA.length;
+
+  /**
+   * Cor fixa por forma de pagamento, calculada sobre TODAS as formas da edição
+   * (não sobre o resultado filtrado) e em ordem alfabética. Assim "PIX" tem a
+   * mesma cor com a tela inteira ou filtrada por ela — antes a cor vinha da
+   * posição na lista e trocava a cada clique.
+   */
+  const corDaForma = useMemo(() => {
+    const formas = Array.from(new Set(rawInvoices.map((i) => i.forma).filter(Boolean))).sort((a, b) =>
+      a.localeCompare(b, "pt-BR")
+    );
+    const mapa = new Map<string, string>();
+    formas.forEach((forma, i) => mapa.set(forma, PALETTE[i % PALETTE.length]));
+    return (nome: string) => mapa.get(nome);
+  }, [rawInvoices]);
 
   const importedFiles = Array.from(
     importedInvoices.reduce((map, inv) => {
@@ -576,13 +621,20 @@ export default function FinanceiroPage() {
               <h3>{t("financeiro.donut.title")}</h3>
               <p>{t("financeiro.donut.desc")}</p>
             </div>
-            <div className="seg">
-              <button className={donutVariant === "full" ? "on" : ""} type="button" onClick={() => setDonutVariant("full")}>
-                Completo
-              </button>
-              <button className={donutVariant === "half" ? "on" : ""} type="button" onClick={() => setDonutVariant("half")}>
-                Meio círculo
-              </button>
+            <div className="panel-head-tools">
+              {formaDonut !== "all" && (
+                <button className="btn primary btn-ver-tudo" type="button" onClick={() => setFormaDonut("all")}>
+                  ↩ Ver todas as formas
+                </button>
+              )}
+              <div className="seg">
+                <button className={donutVariant === "full" ? "on" : ""} type="button" onClick={() => setDonutVariant("full")}>
+                  Completo
+                </button>
+                <button className={donutVariant === "half" ? "on" : ""} type="button" onClick={() => setDonutVariant("half")}>
+                  Meio círculo
+                </button>
+              </div>
             </div>
           </div>
           {!data?.paymentMethods.length ? (
@@ -607,7 +659,13 @@ export default function FinanceiroPage() {
               </div>
             </div>
           ) : (
-            <Donut data={data.paymentMethods} variant={donutVariant} />
+            <Donut
+              data={data.paymentMethods}
+              variant={donutVariant}
+              colorFor={corDaForma}
+              selected={formaDonut === "all" ? undefined : formaDonut}
+              onSelect={(nome) => setFormaDonut((atual) => (atual === nome ? "all" : nome))}
+            />
           )}
         </div>
       </div>
@@ -708,7 +766,16 @@ export default function FinanceiroPage() {
         </div>
       )}
 
-      <div className="table-wrap">
+      <div className={`table-wrap ${montandoLinhas ? "table-wrap-carregando" : ""}`}>
+        {/* Montar milhares de linhas leva alguns segundos e, sem aviso, a tela
+            parece travada — é o tipo de coisa que vira "o sistema deu problema". */}
+        {montandoLinhas && (
+          <div className="tabela-loading" role="status" aria-live="polite">
+            <span className="tabela-loading-spinner" aria-hidden="true" />
+            <strong>Carregando duplicatas…</strong>
+            <span>montando a lista completa — pode levar alguns segundos</span>
+          </div>
+        )}
         <div className="panel-head" style={{ padding: "16px 16px 0" }}>
           <div>
             <h3>{t("financeiro.table.title")}</h3>
@@ -791,7 +858,7 @@ export default function FinanceiroPage() {
             )}
           </div>
         </div>
-        <div className="table-scroll scroll-slim">
+        <div className="table-scroll scroll-slim" ref={areaTabela}>
           <table>
             <thead>
               <tr>
@@ -821,11 +888,19 @@ export default function FinanceiroPage() {
                   }
                 />
               ) : (
-                linhasDaPagina.map((inv, i) => (
+                <>
+                  {/* o espaço das linhas que ficaram fora da janela: mantém a
+                      barra de rolagem fiel ao total */}
+                  {janela.espacoAntes > 0 && (
+                    <tr aria-hidden="true" className="linha-espacadora" style={{ height: janela.espacoAntes }}>
+                      <td colSpan={colunasTabela} />
+                    </tr>
+                  )}
+                  {linhasNaTela.map((inv, i) => (
                   // `numero` identifica a duplicata, não a linha — uma duplicata rateada
                   // em várias rubricas gera várias linhas com o mesmo número, então o
                   // índice entra na key só pra garantir unicidade de renderização.
-                  <tr key={`${inv.numero}-${i}`}>
+                  <tr key={`${inv.numero}-${janela.inicio + i}`}>
                     {COLUNAS_TABELA.map(({ key, cls }) => {
                       if (key === "status") {
                         return (
@@ -842,7 +917,7 @@ export default function FinanceiroPage() {
                           // nome de cliente costuma ser longo: quebra em duas
                           // linhas em vez de esticar a coluna
                           <td key={key} className="td-nome">
-                            {inv.cliente}
+                            <span className="td-nome-texto">{inv.cliente}</span>
                           </td>
                         );
                       }
@@ -861,7 +936,13 @@ export default function FinanceiroPage() {
                       );
                     })}
                   </tr>
-                ))
+                  ))}
+                  {janela.espacoDepois > 0 && (
+                    <tr aria-hidden="true" className="linha-espacadora" style={{ height: janela.espacoDepois }}>
+                      <td colSpan={colunasTabela} />
+                    </tr>
+                  )}
+                </>
               )}
             </tbody>
           </table>
@@ -895,19 +976,30 @@ export default function FinanceiroPage() {
               </button>
             )}
             {faltamLinhas > 0 && (
-              <button
-                className="btn primary btn-mostrar-mais"
-                type="button"
-                onClick={() => setLinhasVisiveis((n) => n + LINHAS_POR_VEZ)}
-              >
-                Mostrar mais {Math.min(LINHAS_POR_VEZ, faltamLinhas)} ({faltamLinhas.toLocaleString("pt-BR")} restantes)
-              </button>
+              <>
+                <button
+                  className="btn primary btn-mostrar-mais"
+                  type="button"
+                  onClick={() => iniciarMontagem(() => setLinhasVisiveis((n) => n + LINHAS_POR_VEZ))}
+                >
+                  Mostrar mais {Math.min(LINHAS_POR_VEZ, faltamLinhas)} ({faltamLinhas.toLocaleString("pt-BR")} restantes)
+                </button>
+                {/* de 50 em 50 é lento quando a pessoa quer conferir a lista
+                    inteira ou rolar até o fim */}
+                <button
+                  className="btn btn-mostrar-menos"
+                  type="button"
+                  onClick={() => iniciarMontagem(() => setLinhasVisiveis(visibleInvoices.length))}
+                  disabled={montandoLinhas}
+                >
+                  {montandoLinhas ? "Montando a lista…" : `Ver todos (${visibleInvoices.length.toLocaleString("pt-BR")})`}
+                </button>
+              </>
             )}
           </span>
         </div>
       </div>
 
-      <div className="footnote">{t("financeiro.footnote")}</div>
     </>
   );
 }

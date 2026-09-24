@@ -194,7 +194,6 @@ export default function Home() {
           <div className="panel-head">
             <div>
               <h3>{t("overview.statusTitle")}</h3>
-              <p>{t("overview.statusDesc")}</p>
             </div>
           </div>
           <div className="status-list">
@@ -216,15 +215,8 @@ export default function Home() {
                 {/* antes ficava "aguardando API" para sempre; o que interessa é
                     quando o módulo recebeu dados pela última vez */}
                 <span className="status-val modulo-atualizacao">
-                  {resumo?.modulos?.[m.key]?.registros ? (
-                    <>
-                      <strong>{resumo.modulos[m.key].registros.toLocaleString("pt-BR")} registros</strong>
-                      <em>
-                        {resumo.modulos[m.key].atualizadoEm
-                          ? `atualizado ${formatRelativeTime(resumo.modulos[m.key].atualizadoEm!)}`
-                          : "sem data de atualização"}
-                      </em>
-                    </>
+                  {resumo?.modulos?.[m.key]?.atualizadoEm ? (
+                    <strong>atualizado {formatRelativeTime(resumo.modulos[m.key].atualizadoEm!)}</strong>
                   ) : (
                     <>
                       <span className="pulse-dot" />
@@ -311,7 +303,6 @@ export default function Home() {
         ))}
       </div>
 
-      <div className="footnote">{t("overview.footnote")}</div>
     </>
   );
 }
