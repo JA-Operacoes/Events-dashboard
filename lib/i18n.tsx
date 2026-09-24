@@ -129,7 +129,7 @@ const DICT = {
 
     "operacional.title": "Serviços contratados",
     "operacional.kpi.itens": "Itens contratados",
-    "operacional.kpi.isencao": "Taxa de isenção",
+    "operacional.kpi.servicosPorExpositor": "Media contratada por expositor",
     "operacional.kpi.expositores": "Expositores com contratações",
     "operacional.allServices": "Todos os serviços",
     "operacional.donut.title": "Por serviço",
@@ -305,7 +305,7 @@ const DICT = {
 
     "operacional.title": "Contracted services",
     "operacional.kpi.itens": "Items contracted",
-    "operacional.kpi.isencao": "Exemption rate",
+    "operacional.kpi.servicosPorExpositor": "Services per exhibitor",
     "operacional.kpi.expositores": "Exhibitors with orders",
     "operacional.allServices": "All services",
     "operacional.donut.title": "By service",

@@ -20,7 +20,7 @@ import {
 import CursorField from "@/components/CursorField";
 import Logo from "@/components/Logo";
 import { MODULES, editionModules, moduleForPath, type ModuleKey } from "@/lib/modules";
-import { corEfetiva } from "@/lib/contrast";
+import { contraste, corEfetiva } from "@/lib/contrast";
 import type { Key } from "@/lib/i18n";
 
 const MODULE_ICON: Record<ModuleKey, typeof IconFinanceiro> = {
@@ -188,9 +188,16 @@ export default function Shell({ children }: { children: React.ReactNode }) {
       const soft = hexToRgba(accent, theme === "dark" ? 0.14 : 0.22);
       root.style.setProperty("--accent", accent);
       if (soft) root.style.setProperty("--accent-soft", soft);
+      // Texto por cima da cor da marca (botão primário). Branco fixo sumia em
+      // marcas claras — bege, amarelo, creme —, principalmente no tema escuro.
+      // Escolhe preto ou branco pelo que contrasta mais com a cor escolhida.
+      const claro = contraste("#ffffff", accent) ?? 0;
+      const escuro = contraste("#101010", accent) ?? 0;
+      root.style.setProperty("--sobre-accent", claro >= escuro ? "#ffffff" : "#101010");
     } else {
       root.style.removeProperty("--accent");
       root.style.removeProperty("--accent-soft");
+      root.style.removeProperty("--sobre-accent");
     }
 
     // a secundária é a cor da série "prevista/pendente" dos gráficos — o par
@@ -242,15 +249,19 @@ export default function Shell({ children }: { children: React.ReactNode }) {
       {navOpen && <div className="rail-backdrop" onClick={() => setNavOpen(false)} />}
       <div className="shell">
         <aside className={`rail ${navOpen ? "rail-open" : ""} ${railRecolhida ? "rail-recolhida" : ""}`}>
-          {/* alinhado à direita da sidebar; com ela recolhida vai para o centro */}
+          {/* botão com texto, não só uma setinha: quem não usa atalhos precisa
+              ler o que o controle faz para se arriscar a clicar */}
           <button
             type="button"
             className="rail-toggle"
             onClick={alternarRail}
-            aria-label={railRecolhida ? "Expandir menu" : "Recolher menu"}
-            title={railRecolhida ? "Expandir menu" : "Recolher menu"}
+            aria-label={railRecolhida ? "Mostrar o menu completo" : "Esconder o menu"}
+            title={railRecolhida ? "Mostrar o menu completo" : "Esconder o menu"}
           >
-            {railRecolhida ? "›" : "‹"}
+            <span className="rail-toggle-seta" aria-hidden="true">
+              {railRecolhida ? "»" : "«"}
+            </span>
+            <span className="rail-toggle-texto">Esconder menu</span>
           </button>
 
           {!hideBranding && (

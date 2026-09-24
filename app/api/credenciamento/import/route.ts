@@ -18,6 +18,25 @@ export async function GET(req: NextRequest) {
     credenciadoEm: r.credenciadoEm,
     checkinEm: r.checkinEm,
     status: r.status as Participante["status"],
+    valor: r.valor,
+    statusPagamento: (r.statusPagamento || null) as Participante["statusPagamento"],
+    // só monta o bloco de público quando a planilha trouxe alguma dessas
+    // colunas — sem isso a tela acharia que tem dado de presença zerado
+    ingresso:
+      r.compareceu != null || r.dataComparecimento || r.cargo || r.segmento || r.estado || r.pais || r.convite
+        ? {
+            compareceu: r.compareceu,
+            valorDevido: r.valorDevido,
+            convite: r.convite,
+            categoria: r.categoria,
+            cargo: r.cargo,
+            segmento: r.segmento,
+            estado: r.estado,
+            pais: r.pais,
+            dataComparecimento: r.dataComparecimento,
+            horaComparecimento: r.horaComparecimento,
+          }
+        : null,
     sourceFile: r.sourceFile,
   }));
   const lastUpdatedAt = rows.reduce((max, r) => (r.createdAt > max ? r.createdAt : max), new Date(0));
@@ -57,6 +76,17 @@ export async function POST(req: NextRequest) {
     credenciadoEm: p.credenciadoEm,
     checkinEm: p.checkinEm,
     status: p.status,
+    compareceu: p.ingresso?.compareceu ?? null,
+    dataComparecimento: p.ingresso?.dataComparecimento ?? "",
+    horaComparecimento: p.ingresso?.horaComparecimento ?? "",
+    convite: p.ingresso?.convite ?? "",
+    cargo: p.ingresso?.cargo ?? "",
+    segmento: p.ingresso?.segmento ?? "",
+    estado: p.ingresso?.estado ?? "",
+    pais: p.ingresso?.pais ?? "",
+    valor: p.valor ?? null,
+    valorDevido: p.ingresso?.valorDevido ?? null,
+    statusPagamento: p.statusPagamento ?? "",
   }));
 
   // Inserção fatiada: cada createMany é uma ida ao banco, então o tamanho é

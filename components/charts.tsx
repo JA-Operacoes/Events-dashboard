@@ -292,7 +292,11 @@ const STATUS_COLOR: Record<string, string> = {
   pendente: "var(--amber)",
   atrasado: "var(--red)",
   credenciado: "var(--good)",
+  // cancelado em vermelho (a cobrança caiu) e cortesia/isento em cinza (não há
+  // o que cobrar) — antes os dois usavam a mesma cor
   cancelado: "var(--red)",
+  cortesia: "var(--ink-mute)",
+  isento: "var(--ink-mute)",
 };
 
 export function StatusBars({
@@ -337,30 +341,35 @@ export function StatusBars({
     );
   }
 
+  // Um sub-cartão por status: rótulo e número em evidência em cima, a barra de
+  // proporção embaixo. Como linha simples, a barra de 70px espremida no canto
+  // direito não se comparava com as outras e o número se perdia.
   return (
     <div className="statusbars-list">
-      {data.map((d) => (
-        <div className="status-row" key={d.label}>
-          <span className="status-left">
-            <span className={`badge ${classMap?.[d.label] ?? d.label}`}>
-              <span className="dot" />
-              {labels[d.label] ?? d.label}
-            </span>
-          </span>
-          <span className="status-val" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span className="barlist-track" style={{ width: 70 }}>
+      {data.map((d) => {
+        const pct = (d.value / total) * 100;
+        return (
+          <div className="status-card" key={d.label}>
+            <div className="status-card-topo">
+              <span className={`badge ${classMap?.[d.label] ?? d.label}`}>
+                <span className="dot" />
+                {labels[d.label] ?? d.label}
+              </span>
+              <strong className="status-card-valor">{d.value.toLocaleString("pt-BR")}</strong>
+            </div>
+            <span className="barlist-track">
               <span
                 className="barlist-fill"
                 style={{
-                  width: `${(d.value / total) * 100}%`,
+                  width: `${pct}%`,
                   background: colorMap?.[d.label] ?? STATUS_COLOR[d.label] ?? "var(--accent)",
                 }}
               />
             </span>
-            {d.value.toLocaleString("pt-BR")}
-          </span>
-        </div>
-      ))}
+            <span className="status-card-pct">{pct.toFixed(1)}% do total</span>
+          </div>
+        );
+      })}
     </div>
   );
 }

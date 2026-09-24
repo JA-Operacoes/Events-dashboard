@@ -22,7 +22,12 @@ export async function GET(req: NextRequest) {
     valor: r.valor,
     status: r.status as Invoice["status"],
     quantidade: r.quantidade,
-    ingresso: (r.ingresso as DadosIngresso | null) ?? null,
+    // Só o valor devido: o resto do bloco (cargo, segmento, comparecimento...)
+    // é leitura de público, que hoje vem do módulo de credenciamento. Mandar
+    // tudo inflava a resposta em alguns MB por edição.
+    ingresso: (r.ingresso as DadosIngresso | null)?.valorDevido != null
+      ? { valorDevido: (r.ingresso as DadosIngresso).valorDevido }
+      : null,
     origem: r.origem,
     origemTipo: classificarOrigem(r.origem),
     centroCusto: r.centroCusto,

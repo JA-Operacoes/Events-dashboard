@@ -131,6 +131,12 @@ export type FinanceiroData = {
     qtdDuplicatas: number | null;
     /** Ingressos comprados — soma das quantidades (duplicata sem quantidade conta 1). */
     qtdIngressos: number | null;
+    /**
+     * Valor ainda não recebido dos ingressos (devido menos pago). Calculado
+     * direto, sem a agregação completa de público — essa mora no
+     * credenciamento desde que o módulo virou dono desses dados.
+     */
+    valorEmAberto: number | null;
   };
   /** Recebimentos por dia. Só o realizado: o previsto dependia do vencimento,
    *  que saiu do painel porque o ERP regera a duplicata ao vencer. */
@@ -143,7 +149,6 @@ export type FinanceiroData = {
   /** Quanto cada origem representa — vazio quando a planilha não traz a coluna. */
   origens: Array<{ label: OrigemReceita; value: number }>;
   /** Preenchido quando há duplicatas com dados de ingresso; nulo caso contrário. */
-  ingressoStats: IngressoStats | null;
   invoices: Invoice[];
 };
 
@@ -239,18 +244,41 @@ export type OperacionalFilters = {
   search: string;
 };
 
+/**
+ * Expositor da edição, vindo da listagem geral (não de um serviço). É a base
+ * usada para responder "quantos dos expositores contrataram alguma coisa" —
+ * sem ela só dá para contar quem aparece nas planilhas de serviço.
+ */
+export type ExpositorBase = {
+  expositor: string;
+  nomeFantasia: string;
+  cnpj: string;
+  estande: string;
+  localizacao: string;
+  tipoEstande: string;
+  area: number | null;
+  sourceFile: string;
+};
+
 export type OperacionalData = {
   asOf: string | null;
   kpis: {
     /** Soma das quantidades pedidas (ex.: 12 recepcionistas). */
     totalItens: number | null;
     /**
-     * Percentual de itens que não geram cobrança (isentos e sem débito) sobre
-     * o total ativo. Nulo quando não há nenhum item ativo para comparar.
+     * Média de serviços distintos por expositor que contratou (ex.: 2,4).
+     * Mede se quem contrata leva mais de um serviço — a leitura de isenção que
+     * ficava aqui já é visível no painel de status.
      */
-    taxaIsencao: number | null;
+    servicosPorExpositor: number | null;
     /** Quantos expositores diferentes têm pedido nesta edição. */
     qtdExpositores: number | null;
+    /**
+     * Total de expositores da edição, da listagem geral importada. Nulo
+     * quando essa listagem não foi importada — aí o KPI mostra só quantos
+     * contrataram, sem o "de X".
+     */
+    qtdExpositoresBase: number | null;
     /** Potência total contratada (kVA). Nulo quando nenhuma linha informa. */
     kvaTotal: number | null;
   };
@@ -264,6 +292,11 @@ export type OperacionalData = {
   equipamentos: Array<{ name: string; value: number }>;
   /** Itens por variação/tipo do item — vazio quando a planilha não tem a coluna. */
   tipos: Array<{ name: string; value: number }>;
+  /**
+   * Expositores da listagem geral sem nenhum serviço contratado. Vazio quando
+   * a listagem não foi importada.
+   */
+  expositoresSemContratacao: ExpositorBase[];
   pedidos: PedidoServico[];
 };
 
@@ -288,6 +321,17 @@ export type Participante = {
   credenciadoEm: string | null;
   checkinEm: string | null;
   status: CredenciamentoStatus;
+  /**
+   * Perfil e presença do participante, quando a planilha de credenciamento
+   * traz essas colunas (comparecimento, cargo, segmento, estado/país...). É o
+   * mesmo formato usado no relatório de ingressos — a leitura do público vive
+   * neste módulo, e o financeiro fica só com o dinheiro.
+   */
+  ingresso?: DadosIngresso | null;
+  /** Valor pago pelo ingresso, quando informado. */
+  valor?: number | null;
+  /** Situação de pagamento do ingresso — separada do status de credenciamento. */
+  statusPagamento?: InvoiceStatus | null;
   /** Preenchido apenas no modo planilha — identifica qual arquivo importado gerou esta linha. */
   sourceFile?: string;
 };
@@ -308,6 +352,12 @@ export type CredenciamentoData = {
     taxaComparecimento: number | null; // percentual 0-100
   };
   timeline: Array<{ date: string; credenciados: number; checkins: number }>;
+  /**
+   * Leitura do público: comparecimento, fluxo por dia/hora, perfil (cargo,
+   * segmento, categoria) e origem geográfica. Nulo quando a planilha
+   * importada não traz nenhuma dessas colunas.
+   */
+  publico: IngressoStats | null;
   categorias: Array<{ label: string; value: number }>;
   statusBreakdown: Array<{ label: CredenciamentoStatus; value: number }>;
   participantes: Participante[];

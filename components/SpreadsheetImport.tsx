@@ -22,14 +22,19 @@ import {
   suggestFinanceiroIngressoMapping,
   CREDENCIAMENTO_FIELDS,
   OPERACIONAL_FIELDS,
+  EXPOSITOR_FIELDS,
+  suggestExpositorMapping,
+  mapRowsToExpositores,
   type SheetTable,
   type ColumnMapping,
   type StatusMapping,
   type FinanceiroImportKey,
   type CredenciamentoFieldKey,
   type OperacionalFieldKey,
+  type ExpositorFieldKey,
 } from "@/lib/spreadsheetImport";
 import type {
+  ExpositorBase,
   Invoice,
   InvoiceStatus,
   Participante,
@@ -52,6 +57,7 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
   title,
   description,
   fields,
+  botaoLabel = "Importar planilha",
   statusOptions,
   suggestMappingFn,
   suggestStatusMappingFn,
@@ -65,6 +71,12 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
   description: string;
   /** Função quando o conjunto de campos depende da escolha feita no extraField. */
   fields: readonly FieldDef<K>[] | ((extra: string) => readonly FieldDef<K>[]);
+  /**
+   * Texto do botão que abre o modal. Onde há mais de um import na mesma tela
+   * (serviços e listagem de expositores, no Operacional), dois botões iguais
+   * não dizem qual é qual.
+   */
+  botaoLabel?: string;
   statusOptions: { value: V; label: string }[];
   suggestMappingFn: (headers: string[], extra: string) => ColumnMapping<K>;
   suggestStatusMappingFn: (values: string[]) => StatusMapping<V>;
@@ -137,14 +149,34 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
   function applyMappingFor(parsed: SheetTable, extra = extraValue, ignorarSalvo = false) {
     const saved = ignorarSalvo ? null : loadMapping<K, V>(module, eventId!);
     const savedValid = saved && Object.values(saved.mapping).every((col) => !col || parsed.headers.includes(col as string));
-    const nextMapping = savedValid ? saved!.mapping : suggestMappingFn(parsed.headers, extra);
+
+    // A sugestão é a base e o salvo entra por cima, campo a campo. Antes o
+    // salvo substituía tudo, então um mapeamento antigo deixava sem preencher
+    // os campos criados depois dele.
+    const sugerido = suggestMappingFn(parsed.headers, extra);
+    const nextMapping: ColumnMapping<K> = { ...sugerido };
+    if (savedValid) {
+      for (const [chave, coluna] of Object.entries(saved!.mapping) as [K, string | undefined][]) {
+        if (!coluna) continue;
+        // se a sugestão já deu essa coluna a outro campo (mais específico), o
+        // salvo perde: é o caso da coluna "Pagamento", que era o status do
+        // credenciamento e hoje é a situação de pagamento
+        const jaReivindicada = (Object.entries(sugerido) as [K, string | undefined][]).some(
+          ([outra, col]) => col === coluna && outra !== chave
+        );
+        if (jaReivindicada) continue;
+        nextMapping[chave] = coluna;
+      }
+    }
     setMapping(nextMapping);
 
     const statusCol = nextMapping[STATUS_KEY];
     if (statusCol) {
       const values = distinctValues(parsed, statusCol);
       const suggested = suggestStatusMappingFn(values);
-      setStatusMapping(savedValid ? { ...suggested, ...saved!.statusMapping } : suggested);
+      setStatusMapping(
+        savedValid && saved!.mapping[STATUS_KEY] === statusCol ? { ...suggested, ...saved!.statusMapping } : suggested
+      );
     } else {
       setStatusMapping({});
     }
@@ -199,11 +231,14 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
   const statusValues = table && mapping[STATUS_KEY] ? distinctValues(table, mapping[STATUS_KEY]!) : [];
   const missingRequired = camposAtivos.filter((f) => f.required && !mapping[f.key]);
   const missingStatusMap = statusValues.some((v) => !statusMapping[v]);
+  // O de-para só é cobrado quando a coluna de status foi de fato escolhida:
+  // há planilhas sem status nenhum (listagem de expositores) e outras em que
+  // ele é opcional (credenciamento, onde a situação da planilha é de
+  // pagamento). Antes o botão travava pedindo uma coluna que não existe.
   const canConfirm =
     table &&
     missingRequired.length === 0 &&
-    statusValues.length > 0 &&
-    !missingStatusMap &&
+    (!mapping[STATUS_KEY] || (statusValues.length > 0 && !missingStatusMap)) &&
     (!extraField || extraValue.trim() !== "");
 
   function reset() {
@@ -262,7 +297,7 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
   if (!open) {
     return (
       <button className="btn" type="button" onClick={() => setOpen(true)}>
-        Importar planilha
+        {botaoLabel}
       </button>
     );
   }
@@ -570,7 +605,8 @@ export function SpreadsheetImportOperacional({
     <SpreadsheetImportPanel<OperacionalFieldKey, ServicoStatus, PedidoServico>
       eventId={eventId}
       module="operacional"
-      title="Importar planilha — Operacional"
+      title="Importar planilha — Serviços contratados"
+      botaoLabel="Importar serviços"
       description="Cada arquivo é um serviço (recepcionista, limpeza, segurança...). Selecione um ou vários de uma vez — os que tiverem o mesmo cabeçalho do primeiro são importados em lote automaticamente, cada um com o serviço tirado do nome do arquivo; reenviar um arquivo com o mesmo nome substitui só as linhas dele, arquivos diferentes se somam. O mapeamento abaixo já vem sugerido pelo nome das colunas — confira e ajuste só o que estiver errado."
       fields={OPERACIONAL_FIELDS}
       statusOptions={OPERACIONAL_STATUS_OPTIONS}
@@ -587,9 +623,43 @@ export function SpreadsheetImportOperacional({
   );
 }
 
-const CREDENCIAMENTO_STATUS_OPTIONS: { value: CredenciamentoStatus; label: string }[] = [
-  { value: "credenciado", label: "Credenciado" },
-  { value: "pendente", label: "Em aberto" },
+/**
+ * Listagem geral de expositores: entra sem status e sem serviço — é só a base
+ * de quem existe na edição, para comparar com quem contratou.
+ */
+export function SpreadsheetImportExpositores({
+  eventId,
+  onImported,
+}: {
+  eventId: string | null;
+  onImported: (expositores: ExpositorBase[], fileName: string) => void;
+}) {
+  return (
+    <SpreadsheetImportPanel<ExpositorFieldKey, never, ExpositorBase>
+      eventId={eventId}
+      module="operacional-expositores"
+      title="Importar listagem de expositores"
+      botaoLabel="Importar expositores"
+      description="É a lista completa de expositores da edição (a mesma que o sistema de vendas exporta), não uma planilha de serviço. Com ela, a tela passa a mostrar quantos dos expositores contrataram algum serviço e quais ainda não contrataram nada. Reenviar o arquivo com o mesmo nome substitui a lista anterior."
+      fields={EXPOSITOR_FIELDS}
+      statusOptions={[]}
+      suggestMappingFn={(headers) => suggestExpositorMapping(headers)}
+      suggestStatusMappingFn={() => ({})}
+      mapRowsFn={mapRowsToExpositores}
+      onImported={onImported}
+    />
+  );
+}
+
+/**
+ * O de-para do credenciamento é da situação de PAGAMENTO do ingresso: é a
+ * coluna de situação que o relatório traz. O status da credencial em si sai do
+ * "Compareceu" (ou de uma coluna própria, quando existir).
+ */
+const CREDENCIAMENTO_PAGAMENTO_OPTIONS: { value: InvoiceStatus; label: string }[] = [
+  { value: "pago", label: "Pago / liquidado" },
+  { value: "pendente", label: "Em aberto / pendente" },
+  { value: "cortesia", label: "Isento / gratuito / cortesia" },
   { value: "cancelado", label: "Cancelado" },
 ];
 
@@ -601,15 +671,15 @@ export function SpreadsheetImportCredenciamento({
   onImported: (participantes: Participante[], fileName: string) => void;
 }) {
   return (
-    <SpreadsheetImportPanel<CredenciamentoFieldKey, CredenciamentoStatus, Participante>
+    <SpreadsheetImportPanel<CredenciamentoFieldKey, InvoiceStatus, Participante>
       eventId={eventId}
       module="credenciamento"
       title="Importar planilha — Credenciamento"
       description="Selecione um ou vários arquivos de uma vez — os que tiverem o mesmo cabeçalho do primeiro são importados em lote automaticamente; também dá pra subir de novo sempre que atualizar — reenviar um arquivo com o mesmo nome substitui só as linhas dele, arquivos diferentes se somam. O mapeamento abaixo já vem sugerido pelo nome das colunas — confira e ajuste só o que estiver errado."
       fields={CREDENCIAMENTO_FIELDS}
-      statusOptions={CREDENCIAMENTO_STATUS_OPTIONS}
+      statusOptions={CREDENCIAMENTO_PAGAMENTO_OPTIONS}
       suggestMappingFn={suggestCredenciamentoMapping}
-      suggestStatusMappingFn={suggestCredenciamentoStatusMapping}
+      suggestStatusMappingFn={suggestFinanceiroStatusMapping}
       mapRowsFn={mapRowsToParticipantes}
       onImported={onImported}
     />

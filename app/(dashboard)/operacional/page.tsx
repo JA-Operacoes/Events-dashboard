@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useDeferredValue } from "react";
 import { useEvent } from "@/lib/eventContext";
 import { useI18n } from "@/lib/i18n";
 import { useAuth } from "@/lib/auth";
@@ -10,9 +10,10 @@ import {
   type OperacionalFilters,
   type PedidoServico,
   type ServicoStatus,
+  type ExpositorBase,
 } from "@/lib/dataSource";
 import { ConnChip, Empty, EmptyTableRow, KpiRow, int, money, pct } from "@/components/ui";
-import { SpreadsheetImportOperacional } from "@/components/SpreadsheetImport";
+import { SpreadsheetImportOperacional, SpreadsheetImportExpositores } from "@/components/SpreadsheetImport";
 import {
   aggregateOperacional,
   mergeImportedPedidos,
@@ -43,6 +44,9 @@ export default function OperacionalPage() {
   const [donutVariant, setDonutVariant] = useState<"full" | "half">("full");
   // o ranking mostra os 10 primeiros; o resto abre sob demanda
   const [verTodosExpositores, setVerTodosExpositores] = useState(false);
+  // busca da lista de quem não contratou — a lista é operacional, para achar
+  // um expositor específico e cobrá-lo
+  const [buscaSemContratacao, setBuscaSemContratacao] = useState("");
   // busca só do ranking, liberada junto com o "ver todos" — serve para achar um
   // expositor fora do top sem mexer nos filtros da tela inteira
   const [buscaRanking, setBuscaRanking] = useState("");
@@ -59,6 +63,14 @@ export default function OperacionalPage() {
   const [tableRange, setTableRange] = useState({ de: "", ate: "" });
   const [tableStatus, setTableStatus] = useState<"all" | ServicoStatus>("all");
   const [tableTurno, setTableTurno] = useState("all");
+  /**
+   * Busca adiada: digitar refiltra milhares de linhas e refaz a agregação a
+   * cada tecla. Com useDeferredValue o campo responde na hora e o recálculo
+   * acontece com a última letra digitada, sem travar a digitação.
+   */
+  const buscaAplicada = useDeferredValue(search);
+  const tableSearchAplicada = useDeferredValue(tableSearch);
+
   const [connState, setConnState] = useState<"pending" | "connected" | "error">("pending");
   const [apiData, setApiData] = useState<OperacionalData | null>(null);
   // quando veio a última atualização de dados (import de planilha) — é o que
@@ -71,6 +83,13 @@ export default function OperacionalPage() {
     () => getCached(`operacional:${editionId}`) ?? []
   );
   const hasImported = importedPedidos.length > 0;
+
+  // Listagem geral de expositores da edição: é o denominador do "137 de 210".
+  // Vem de uma planilha própria, então pode não existir — nesse caso o KPI
+  // mostra só quantos contrataram.
+  const [expositoresBase, setExpositoresBase] = useState<ExpositorBase[]>(
+    () => getCached(`operacional-expositores:${editionId}`) ?? []
+  );
 
   // fonte bruta de pedidos, venha de onde vier — o filtro de status/busca roda
   // por cima dela e os gráficos/tabela são recalculados a partir do resultado
@@ -96,7 +115,7 @@ export default function OperacionalPage() {
   // nomes que a busca geral oferece enquanto se digita — expositor (razão
   // social e fantasia), estande e serviço, que é por onde se procura na prática.
   const sugestoes = useMemo(() => {
-    if (search.trim().length < 2) return [];
+    if (buscaAplicada.trim().length < 2) return [];
     const nomes = new Set<string>();
     for (const p of rawPedidos) {
       if (p.expositor) nomes.add(p.expositor);
@@ -104,11 +123,11 @@ export default function OperacionalPage() {
       if (p.estande) nomes.add(p.estande);
       if (p.servico) nomes.add(p.servico);
     }
-    return sugerir(search, Array.from(nomes));
-  }, [rawPedidos, search]);
+    return sugerir(buscaAplicada, Array.from(nomes));
+  }, [rawPedidos, buscaAplicada]);
 
   const filteredPedidos = useMemo(() => {
-    const term = search.trim();
+    const term = buscaAplicada.trim();
     return rawPedidos.filter((p) => {
       if (statusFilter !== "all" && p.status !== statusFilter) return false;
       if (servico !== "all" && p.servico !== servico) return false;
@@ -117,14 +136,18 @@ export default function OperacionalPage() {
       if (term && !combina(term, [p.expositor, p.nomeFantasia, p.cnpj, p.estande, p.turno, p.servico])) return false;
       return true;
     });
-  }, [rawPedidos, statusFilter, servico, tipoFilter, equipamentoFiltro, search]);
+  }, [rawPedidos, statusFilter, servico, tipoFilter, equipamentoFiltro, buscaAplicada]);
 
   // memoizado pelo mesmo motivo do financeiro: a agregação roda em cima da
   // lista inteira e não pode ser refeita a cada render.
   const data = useMemo(
-    () => (apiData || hasImported ? aggregateOperacional(filteredPedidos) : null),
-    [apiData, hasImported, filteredPedidos]
+    () => (apiData || hasImported ? aggregateOperacional(filteredPedidos, expositoresBase) : null),
+    [apiData, hasImported, filteredPedidos, expositoresBase]
   );
+
+  // usados no KPI e no painel de quem não contratou
+  const totalExpositoresBase = data?.kpis.qtdExpositoresBase ?? null;
+  const semContratacao = data?.expositoresSemContratacao ?? [];
 
   // turnos presentes nos dados — lista fixa deixaria opção que nunca filtra nada
   const turnosDisponiveis = useMemo(
@@ -136,7 +159,7 @@ export default function OperacionalPage() {
   );
 
   const visiblePedidos = useMemo(() => {
-    const term = tableSearch.trim();
+    const term = tableSearchAplicada.trim();
     return (data?.pedidos ?? []).filter((p) => {
       if (tableStatus !== "all" && p.status !== tableStatus) return false;
       if (tableTurno !== "all" && p.turno !== tableTurno) return false;
@@ -157,7 +180,7 @@ export default function OperacionalPage() {
       if (term && !combina(term, [p.expositor, p.nomeFantasia, p.estande, p.cnpj, p.servico, p.turno])) return false;
       return true;
     });
-  }, [data, tableSearch, tableStatus, tableTurno, tableRange]);
+  }, [data, tableSearchAplicada, tableStatus, tableTurno, tableRange]);
 
   const filtrosTabelaAtivos =
     tableStatus !== "all" || tableTurno !== "all" || !!tableRange.de || !!tableRange.ate || !!tableSearch.trim();
@@ -166,8 +189,11 @@ export default function OperacionalPage() {
   // específico — na visão geral (sem busca) fica sem essa soma na tela.
   const visibleTotal = useMemo(() => visiblePedidos.reduce((s, p) => s + p.quantidade, 0), [visiblePedidos]);
 
-  const LINHAS_POR_PAGINA = 100;
-  const [pagina, setPagina] = useState(1);
+  // A tabela cresce por "mostrar mais" em vez de páginas numeradas: com
+  // milhares de linhas, "página 7 de 48" não diz nada a quem só quer achar um
+  // expositor — e obriga a decorar em que página estava.
+  const LINHAS_POR_VEZ = 50;
+  const [linhasVisiveis, setLinhasVisiveis] = useState(LINHAS_POR_VEZ);
 
   const [sortKey, setSortKey] = useState<keyof PedidoServico | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
@@ -275,21 +301,19 @@ export default function OperacionalPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
 
-  const totalPaginas = Math.max(1, Math.ceil(visiblePedidos.length / LINHAS_POR_PAGINA));
-
-  // filtro novo devolve lista nova: seguir na página anterior mostraria o meio
-  // do resultado e parece que a busca não encontrou nada
-  const assinaturaFiltros = `${tableSearch}|${tableStatus}|${tableTurno}|${tableRange.de}|${tableRange.ate}|${search}|${statusFilter}|${servico}|${tipoFilter}|${equipamentoFiltro}`;
+  // filtro novo devolve lista nova: continuar com a lista esticada do filtro
+  // anterior faria a tela abrir no meio do resultado
+  const assinaturaFiltros = `${tableSearchAplicada}|${tableStatus}|${tableTurno}|${tableRange.de}|${tableRange.ate}|${buscaAplicada}|${statusFilter}|${servico}|${tipoFilter}|${equipamentoFiltro}`;
   const [filtrosAnteriores, setFiltrosAnteriores] = useState(assinaturaFiltros);
   if (filtrosAnteriores !== assinaturaFiltros) {
     setFiltrosAnteriores(assinaturaFiltros);
-    setPagina(1);
+    setLinhasVisiveis(LINHAS_POR_VEZ);
   }
-  const paginaAtual = Math.min(pagina, totalPaginas);
   const linhasDaPagina = useMemo(
-    () => sortedPedidos.slice((paginaAtual - 1) * LINHAS_POR_PAGINA, paginaAtual * LINHAS_POR_PAGINA),
-    [sortedPedidos, paginaAtual]
+    () => sortedPedidos.slice(0, linhasVisiveis),
+    [sortedPedidos, linhasVisiveis]
   );
+  const faltamLinhas = Math.max(0, visiblePedidos.length - linhasDaPagina.length);
 
   const importedFiles = Array.from(
     importedPedidos.reduce((map, p) => {
@@ -308,6 +332,48 @@ export default function OperacionalPage() {
       setCached(`operacional:${editionId}`, pedidos);
       setLastUpdatedAt(res.headers.get("X-Last-Updated"));
     }
+  }
+
+  async function loadExpositores() {
+    if (!editionId) return;
+    const res = await fetch(`/api/operacional/expositores?editionId=${editionId}`);
+    if (res.ok) {
+      const lista: ExpositorBase[] = await res.json();
+      setExpositoresBase(lista);
+      setCached(`operacional-expositores:${editionId}`, lista);
+    }
+  }
+
+  async function handleExpositoresImportados(lista: ExpositorBase[], fileName: string) {
+    if (!editionId) {
+      notifyWarning(
+        "Selecione uma edição primeiro",
+        "Escolha (ou crie) uma edição do evento antes de importar a listagem — sem isso não há onde salvar."
+      );
+      return;
+    }
+    setExpositoresBase(lista);
+    setCached(`operacional-expositores:${editionId}`, lista);
+
+    const r = await enviarImportEmLotes("/api/operacional/expositores", editionId, fileName, "expositores", lista);
+    if (!r.ok) {
+      loadExpositores();
+      notifyError("Falha ao importar a listagem", r.erro);
+      return;
+    }
+    notifySuccess(
+      "Listagem de expositores importada",
+      `${lista.length.toLocaleString("pt-BR")} expositor(es) de "${fileName}" agora servem de base para comparar quem contratou.`
+    );
+    loadExpositores();
+  }
+
+  async function removerListagemExpositores() {
+    if (!editionId) return;
+    setExpositoresBase([]);
+    setCached(`operacional-expositores:${editionId}`, []);
+    const res = await fetch(`/api/operacional/expositores?editionId=${editionId}`, { method: "DELETE" });
+    if (!res.ok) loadExpositores();
   }
 
   async function handleImported(pedidos: PedidoServico[], fileName: string) {
@@ -344,9 +410,12 @@ export default function OperacionalPage() {
     if (!res.ok) loadImported();
   }
 
-  // ordem de leitura: quem contratou, o que foi contratado e quanto saiu isento.
-  // A potência entra como quarto cartão só quando a planilha do serviço traz
-  // kVA — é o caso do relatório de elétrica.
+  const semContratacaoVisivel = useMemo(() => {
+    const termo = buscaSemContratacao.trim();
+    if (!termo) return semContratacao;
+    return semContratacao.filter((e) => combina(termo, [e.expositor, e.nomeFantasia, e.cnpj, e.estande]));
+  }, [semContratacao, buscaSemContratacao]);
+
   // fechado mostra o topo; aberto mostra tudo, filtrado pela busca do card
   const rankingVisivel = useMemo(() => {
     const todos = data?.topExpositores ?? [];
@@ -354,15 +423,29 @@ export default function OperacionalPage() {
     return buscaRanking.trim() ? todos.filter((e) => combina(buscaRanking, [e.name])) : todos;
   }, [data?.topExpositores, verTodosExpositores, buscaRanking]);
 
+  // ordem de leitura: quem contratou, o que foi contratado e quanto saiu isento.
+  // A potência entra como quarto cartão só quando a planilha do serviço traz
+  // kVA — é o caso do relatório de elétrica.
   const KPI_DEFS = [
-    { key: "qtdExpositores" as const, label: t("operacional.kpi.expositores"), fmt: int },
+    {
+      key: "qtdExpositores" as const,
+      // com a listagem geral importada, o número ganha o denominador: saber
+      // que 137 contrataram só faz sentido sabendo de quantos.
+      label: totalExpositoresBase ? "Expositores com contratações" : t("operacional.kpi.expositores"),
+      fmt: (v: number | null) =>
+        v == null ? "—" : totalExpositoresBase ? `${int(v)} de ${int(totalExpositoresBase)}` : int(v),
+    },
     { key: "totalItens" as const, label: t("operacional.kpi.itens"), fmt: int },
-    { key: "taxaIsencao" as const, label: t("operacional.kpi.isencao"), fmt: pct },
+    {
+      key: "servicosPorExpositor" as const,
+      label: t("operacional.kpi.servicosPorExpositor"),
+      fmt: (v: number | null) => (v == null ? "—" : v.toLocaleString("pt-BR", { maximumFractionDigits: 1 })),
+    },
     ...(data?.kpis.kvaTotal != null
       ? [
           {
             key: "kvaTotal" as const,
-            label: "Potência contratada",
+            label: "Potência Geral contratada",
             fmt: (v: number | null) => (v == null ? "—" : `${v.toLocaleString("pt-BR")} kVA`),
           },
         ]
@@ -375,6 +458,41 @@ export default function OperacionalPage() {
     cancelado: t("status.cancelado"),
     isento: t("status.isento"),
   };
+
+  // Filtros que recortam a tela inteira (não os da tabela). Viram etiquetas
+  // visíveis com um jeito óbvio de desfazer — clicar no gráfico filtra, e antes
+  // não havia nada indicando como voltar.
+  const filtrosDaTela = [
+    servico !== "all" && { id: "servico", rotulo: "Serviço", valor: servico, limpar: () => setServico("all") },
+    tipoFilter !== "all" && {
+      id: "tipoEstande",
+      rotulo: "Tipo de estande",
+      valor: tipoFilter,
+      limpar: () => setTipoFilter("all"),
+    },
+    equipamentoFiltro !== "all" && {
+      id: "equipamento",
+      rotulo: "Equipamento",
+      valor: equipamentoFiltro,
+      limpar: () => setEquipamentoFiltro("all"),
+    },
+    statusFilter !== "all" && {
+      id: "status",
+      rotulo: "Situação",
+      valor: STATUS_LABEL[statusFilter as ServicoStatus] ?? String(statusFilter),
+      limpar: () => setStatusFilter("all"),
+    },
+    search.trim() !== "" && { id: "busca", rotulo: "Busca", valor: search, limpar: () => setSearch("") },
+  ].filter(Boolean) as Array<{ id: string; rotulo: string; valor: string; limpar: () => void }>;
+
+  function limparFiltrosDaTela() {
+    setServico("all");
+    setTipoFilter("all");
+    setEquipamentoFiltro("all");
+    setStatusFilter("all");
+    setSearch("");
+  }
+
   // não existe classe de badge por status de serviço — reaproveita as do
   // financeiro pela semântica: pago é o desfecho positivo, recusado é
   // negativo, e isento/sem débito são neutros (não há nada a receber).
@@ -382,13 +500,13 @@ export default function OperacionalPage() {
     pago: "pago",
     pendente: "pendente",
     cancelado: "atrasado",
-    isento: "cancelado",
+    isento: "cortesia",
   };
   const STATUS_COLOR: Record<string, string> = {
     pago: "var(--good)",
     pendente: "var(--amber)",
     cancelado: "var(--red)",
-    isento: "var(--teal)",
+    isento: "var(--ink-mute)",
   };
 
   /**
@@ -464,6 +582,7 @@ export default function OperacionalPage() {
     // mostra o que já se sabe dessa edição na hora (cache ou vazio) em vez de
     // sempre zerar — evita a "piscada" ao trocar de edição/voltar pra aba.
     setImportedPedidos(getCached<PedidoServico[]>(`operacional:${editionId}`) ?? []);
+    setExpositoresBase(getCached<ExpositorBase[]>(`operacional-expositores:${editionId}`) ?? []);
     setTableSearch("");
     // serviço/localização são valores das planilhas da edição anterior — manter
     // o filtro ao trocar de edição deixaria a tela vazia sem motivo aparente.
@@ -471,6 +590,7 @@ export default function OperacionalPage() {
     setTipoFilter("all");
     setEquipamentoFiltro("all");
     loadImported(); // revalida com o banco por baixo dos panos
+    loadExpositores();
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eventId, editionId]);
@@ -498,6 +618,9 @@ export default function OperacionalPage() {
               onImported={handleImported}
             />
           )}
+          {canManageData && !apiData && (
+            <SpreadsheetImportExpositores eventId={eventId} onImported={handleExpositoresImportados} />
+          )}
           {(hasImported || apiData) && (
             <button className="btn" type="button" onClick={handleExportar}>
               Exportar planilha
@@ -511,21 +634,48 @@ export default function OperacionalPage() {
         </div>
       </div>
 
-      {tipoFilter !== "all" && (
-        <div className="conta-focus-banner">
-          <span>
-            Visão exclusiva de <strong>{tipoFilter}</strong> — KPIs, gráficos e status abaixo consideram só os pedidos
-            desse tipo de estande.
-          </span>
-          <button className="btn" type="button" onClick={() => setTipoFilter("all")}>
-            ← Voltar para visão geral
-          </button>
+      {/* Clicar num serviço do gráfico (ou num tipo de estande) recorta a tela
+          inteira, e antes não havia nada dizendo isso nem como desfazer. Cada
+          filtro vira uma etiqueta com "✕", e o botão devolve a visão completa. */}
+      {filtrosDaTela.length > 0 && (
+        <div className="filtros-ativos">
+          <span className="filtros-ativos-titulo">Você está vendo só:</span>
+          {filtrosDaTela.map((f) => (
+            <button
+              key={f.id}
+              className="filtro-chip"
+              type="button"
+              onClick={f.limpar}
+              title={`Remover o filtro de ${f.rotulo.toLowerCase()}`}
+            >
+              <span className="filtro-chip-rotulo">{f.rotulo}</span>
+              <strong>{f.valor}</strong>
+              <span className="filtro-chip-x" aria-hidden="true">
+                ✕
+              </span>
+            </button>
+          ))}
+          {/* com um filtro só, o "✕" da etiqueta e o botão do próprio painel já
+              resolvem; o botão geral aparece quando há vários para desfazer */}
+          {filtrosDaTela.length > 1 && (
+            <button className="btn primary filtros-limpar" type="button" onClick={limparFiltrosDaTela}>
+              ↩ Ver tudo de novo
+            </button>
+          )}
         </div>
       )}
 
-      {canManageData && !apiData && importedFiles.length > 0 && (
+      {canManageData && !apiData && (importedFiles.length > 0 || expositoresBase.length > 0) && (
         <div className="import-files-bar">
           <span>Arquivos importados:</span>
+          {expositoresBase.length > 0 && (
+            <span className="import-file-chip" title={expositoresBase[0].sourceFile}>
+              listagem de expositores ({expositoresBase.length})
+              <button type="button" onClick={removerListagemExpositores} aria-label="Remover a listagem de expositores">
+                ×
+              </button>
+            </span>
+          )}
           {importedFiles.map(([name, count]) => (
             <span className="import-file-chip" key={name} title={name}>
               {nomeArquivoCurto(name)} ({count})
@@ -627,13 +777,22 @@ export default function OperacionalPage() {
               <h3>{t("operacional.donut.title")}</h3>
               <p>{t("operacional.donut.desc")}</p>
             </div>
-            <div className="seg">
-              <button className={donutVariant === "full" ? "on" : ""} type="button" onClick={() => setDonutVariant("full")}>
-                Completo
-              </button>
-              <button className={donutVariant === "half" ? "on" : ""} type="button" onClick={() => setDonutVariant("half")}>
-                Meio círculo
-              </button>
+            <div className="panel-head-tools">
+              {/* o desfazer fica onde o filtro foi aplicado: quem clicou numa
+                  fatia procura a saída no próprio gráfico, não no topo da tela */}
+              {servico !== "all" && (
+                <button className="btn primary btn-ver-tudo" type="button" onClick={() => setServico("all")}>
+                  ↩ Ver todos os serviços
+                </button>
+              )}
+              <div className="seg">
+                <button className={donutVariant === "full" ? "on" : ""} type="button" onClick={() => setDonutVariant("full")}>
+                  Completo
+                </button>
+                <button className={donutVariant === "half" ? "on" : ""} type="button" onClick={() => setDonutVariant("half")}>
+                  Meio círculo
+                </button>
+              </div>
             </div>
           </div>
           {!data?.servicos.length ? (
@@ -686,6 +845,44 @@ export default function OperacionalPage() {
           )}
         </div>
 
+        {semContratacao.length > 0 && (
+          <div className="panel">
+            <div className="panel-head">
+              <div>
+                <h3>Expositores sem contratação</h3>
+                <p>
+                  {semContratacao.length.toLocaleString("pt-BR")} de{" "}
+                  {(totalExpositoresBase ?? 0).toLocaleString("pt-BR")} não contrataram nenhum serviço
+                  {filtrosDaTela.length > 0 ? " dentro do que está filtrado" : ""}
+                </p>
+              </div>
+            </div>
+            {/* lista de trabalho: é quem a equipe comercial ainda precisa
+                procurar, então vem com busca e rola dentro do card */}
+            <div className="ranking-wrap">
+              <input
+                className="input"
+                placeholder="Buscar expositor nesta lista…"
+                value={buscaSemContratacao}
+                onChange={(e) => setBuscaSemContratacao(e.target.value)}
+              />
+              <div className="ranking-lista barlist-scroll scroll-slim">
+                <ul className="lista-simples">
+                  {semContratacaoVisivel.map((e) => (
+                    <li key={e.cnpj || e.expositor}>
+                      <span className="lista-simples-nome">{e.nomeFantasia || e.expositor}</span>
+                      <span className="lista-simples-extra">
+                        {[e.estande, tipoEstandeAgrupado(e.tipoEstande)].filter(Boolean).join(" · ") || "—"}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              {!semContratacaoVisivel.length && <p className="ranking-vazio">Nenhum expositor com esse nome.</p>}
+            </div>
+          </div>
+        )}
+
         {(data?.equipamentos.length ?? 0) > 0 && (
           <div className="panel">
             <div className="panel-head">
@@ -693,6 +890,11 @@ export default function OperacionalPage() {
                 <h3>Por equipamento</h3>
                 <p>itens contratados por equipamento</p>
               </div>
+              {equipamentoFiltro !== "all" && (
+                <button className="btn primary btn-ver-tudo" type="button" onClick={() => setEquipamentoFiltro("all")}>
+                  ↩ Ver todos os equipamentos
+                </button>
+              )}
             </div>
             <BarList
               data={data!.equipamentos}
@@ -882,7 +1084,9 @@ export default function OperacionalPage() {
                       }
                       if (key === "expositor") {
                         return (
-                          <td key={key} style={{ fontFamily: "var(--sans)", color: "var(--ink)" }}>
+                          // razão social costuma ser longa: quebra em vez de
+                          // sumir num corte com "…"
+                          <td key={key} className="td-nome">
                             {p.expositor}
                           </td>
                         );
@@ -908,8 +1112,10 @@ export default function OperacionalPage() {
           <span>
             {!visiblePedidos.length
               ? t("operacional.table.countZero")
-              : filtrosTabelaAtivos
-              ? `${visiblePedidos.length.toLocaleString("pt-BR")} de ${data!.pedidos.length.toLocaleString("pt-BR")} ${t("operacional.table.count")}`
+              : faltamLinhas > 0
+              ? `Mostrando ${linhasDaPagina.length.toLocaleString("pt-BR")} de ${visiblePedidos.length.toLocaleString(
+                  "pt-BR"
+                )} ${t("operacional.table.count")}`
               : `${visiblePedidos.length.toLocaleString("pt-BR")} ${t("operacional.table.count")}`}
           </span>
           <span className="pager">
@@ -918,23 +1124,28 @@ export default function OperacionalPage() {
                 Total: {visibleTotal.toLocaleString("pt-BR")} item(ns)
               </span>
             )}
-            {totalPaginas > 1 && (
-              <>
-                <button className="field field-btn" type="button" disabled={paginaAtual <= 1} onClick={() => setPagina(paginaAtual - 1)}>
-                  ‹
-                </button>
-                <span>
-                  {paginaAtual} / {totalPaginas}
-                </span>
-                <button
-                  className="field field-btn"
-                  type="button"
-                  disabled={paginaAtual >= totalPaginas}
-                  onClick={() => setPagina(paginaAtual + 1)}
-                >
-                  ›
-                </button>
-              </>
+            {linhasVisiveis > LINHAS_POR_VEZ && (
+              <button
+                className="btn btn-mostrar-menos"
+                type="button"
+                onClick={() => {
+                  setLinhasVisiveis(LINHAS_POR_VEZ);
+                  // sem voltar ao topo, a tela ficaria parada num trecho que
+                  // acabou de sumir da lista
+                  document.querySelector(".table-scroll")?.scrollTo({ top: 0 });
+                }}
+              >
+                ↑ Mostrar menos
+              </button>
+            )}
+            {faltamLinhas > 0 && (
+              <button
+                className="btn primary btn-mostrar-mais"
+                type="button"
+                onClick={() => setLinhasVisiveis((n) => n + LINHAS_POR_VEZ)}
+              >
+                Mostrar mais {Math.min(LINHAS_POR_VEZ, faltamLinhas)} ({faltamLinhas.toLocaleString("pt-BR")} restantes)
+              </button>
             )}
           </span>
         </div>

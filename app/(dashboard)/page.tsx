@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useEvent } from "@/lib/eventContext";
 import { useI18n } from "@/lib/i18n";
 import { useAuth } from "@/lib/auth";
@@ -9,6 +9,14 @@ import { IconFinanceiro, IconOperacional, IconCredenciamento, IconClock } from "
 import { Checkbox } from "@/components/ui";
 import { notifySuccess, notifyError } from "@/lib/swal";
 import { editionModules } from "@/lib/modules";
+import { formatRelativeTime, parseDateLoose } from "@/lib/period";
+
+/** Resumo por módulo devolvido por /api/overview — números, nunca as linhas. */
+type ResumoModulo = { registros: number; atualizadoEm: string | null };
+type ResumoEdicao = {
+  modulos: Record<string, ResumoModulo>;
+  datas: Record<string, Array<{ data: string; registros: number }>>;
+};
 
 const BANNER_ACCEPT = ["image/png", "image/jpeg", "image/webp"];
 const BANNER_MAX_MB = 5;
@@ -121,6 +129,56 @@ function EventHero() {
 export default function Home() {
   const { t } = useI18n();
   const { edition } = useEvent();
+  const [resumo, setResumo] = useState<ResumoEdicao | null>(null);
+
+  useEffect(() => {
+    setResumo(null);
+    if (!edition?.id) return;
+    let vivo = true;
+    fetch(`/api/overview?editionId=${edition.id}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((dados) => vivo && setResumo(dados))
+      .catch(() => {});
+    return () => {
+      vivo = false;
+    };
+  }, [edition?.id]);
+
+  /**
+   * Linha do tempo da edição: o período vem das datas que as planilhas
+   * trazem — comparecimento no credenciamento, data do serviço no
+   * operacional, data de pagamento no financeiro. Não há campo de "início e
+   * fim" cadastrado no evento, e inventar um seria pior que ler o que
+   * aconteceu de fato.
+   */
+  const linhaDoTempo = useMemo(() => {
+    if (!resumo) return null;
+    const pontos: Array<{ ts: number; rotulo: string; registros: number; origem: string }> = [];
+    for (const [modulo, lista] of Object.entries(resumo.datas)) {
+      for (const d of lista) {
+        const ts = parseDateLoose(d.data);
+        if (!Number.isFinite(ts) || ts <= 0) continue;
+        pontos.push({ ts, rotulo: d.data, registros: d.registros, origem: modulo });
+      }
+    }
+    if (!pontos.length) return null;
+    pontos.sort((a, b) => a.ts - b.ts);
+    const inicio = pontos[0];
+    const fim = pontos[pontos.length - 1];
+    const span = Math.max(1, fim.ts - inicio.ts);
+    const agora = Date.now();
+    // percentual do período já percorrido — 100% quando a edição terminou
+    const progresso = Math.min(100, Math.max(0, ((agora - inicio.ts) / span) * 100));
+
+    // dias de evento são os do credenciamento: é quando o público passou pela
+    // catraca, a única data que representa o evento acontecendo
+    const diasEvento = (resumo.datas.credenciamento ?? [])
+      .map((d) => ({ ...d, ts: parseDateLoose(d.data) }))
+      .filter((d) => Number.isFinite(d.ts) && d.ts > 0)
+      .sort((a, b) => a.ts - b.ts);
+
+    return { inicio, fim, span, progresso, diasEvento, total: pontos.length };
+  }, [resumo]);
 
   // a visão geral lista só o que a edição contratou — um card que leva a uma
   // tela bloqueada seria um beco sem saída.
@@ -155,9 +213,24 @@ export default function Home() {
                   </span>
                   {t(`module.${m.key}.title` as any)}
                 </span>
-                <span className="status-val" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <span className="pulse-dot" />
-                  {t("common.pending")}
+                {/* antes ficava "aguardando API" para sempre; o que interessa é
+                    quando o módulo recebeu dados pela última vez */}
+                <span className="status-val modulo-atualizacao">
+                  {resumo?.modulos?.[m.key]?.registros ? (
+                    <>
+                      <strong>{resumo.modulos[m.key].registros.toLocaleString("pt-BR")} registros</strong>
+                      <em>
+                        {resumo.modulos[m.key].atualizadoEm
+                          ? `atualizado ${formatRelativeTime(resumo.modulos[m.key].atualizadoEm!)}`
+                          : "sem data de atualização"}
+                      </em>
+                    </>
+                  ) : (
+                    <>
+                      <span className="pulse-dot" />
+                      {resumo ? "nenhuma planilha importada" : "carregando…"}
+                    </>
+                  )}
                 </span>
               </div>
             ))}
@@ -171,21 +244,53 @@ export default function Home() {
               <p>{t("overview.timelineDesc")}</p>
             </div>
           </div>
-          <div className="timeline-track">
-            <div className="timeline-bar">
-              <div className="timeline-fill" style={{ width: "0%" }} />
+          {linhaDoTempo ? (
+            <>
+              <div className="timeline-track">
+                <div className="timeline-bar">
+                  <div className="timeline-fill" style={{ width: `${linhaDoTempo.progresso}%` }} />
+                  {/* cada dia de credenciamento marcado na régua: é onde o
+                      evento de fato aconteceu dentro do período */}
+                  {linhaDoTempo.diasEvento.map((d) => (
+                    <span
+                      key={d.data}
+                      className="timeline-marca"
+                      style={{ left: `${((d.ts - linhaDoTempo.inicio.ts) / linhaDoTempo.span) * 100}%` }}
+                      title={`${d.data} — ${d.registros.toLocaleString("pt-BR")} credenciamentos`}
+                    />
+                  ))}
+                </div>
+                <div className="timeline-labels">
+                  <span>{linhaDoTempo.inicio.rotulo}</span>
+                  <span>{linhaDoTempo.fim.rotulo}</span>
+                </div>
+              </div>
+
+              {linhaDoTempo.diasEvento.length > 0 && (
+                <ul className="timeline-dias">
+                  {linhaDoTempo.diasEvento.map((d) => (
+                    <li key={d.data}>
+                      <span className="timeline-dia-data">{d.data}</span>
+                      <span className="timeline-dia-valor">
+                        {d.registros.toLocaleString("pt-BR")} credenciamentos
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          ) : (
+            <div className="empty" style={{ marginTop: 14, padding: "22px 10px" }}>
+              <div className="g">
+                <IconClock size={22} />
+              </div>
+              <span>
+                {resumo
+                  ? "importe uma planilha com datas (comparecimento, serviço ou pagamento) para ver o período da edição"
+                  : "carregando…"}
+              </span>
             </div>
-            <div className="timeline-labels">
-              <span>—</span>
-              <span>—</span>
-            </div>
-          </div>
-          <div className="empty" style={{ marginTop: 14, padding: "22px 10px" }}>
-            <div className="g">
-              <IconClock size={22} />
-            </div>
-            <span>{t("overview.timeline.empty")}</span>
-          </div>
+          )}
         </div>
       </div>
 

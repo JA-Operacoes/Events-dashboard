@@ -16,6 +16,7 @@ import * as XLSX from "xlsx";
 import { parseDateLoose, separarDataHora } from "./period";
 import * as cptable from "xlsx/dist/cpexcel.full.mjs";
 import type {
+  ExpositorBase,
   FinanceiroData,
   Invoice,
   InvoiceStatus,
@@ -559,12 +560,12 @@ export function aggregateFinanceiro(invoices: Invoice[]): FinanceiroData {
 
   return {
     asOf: new Date().toISOString(),
-    ingressoStats: agregarIngresso(invoices),
     kpis: {
       totalRecebido,
       ticketMedio,
       qtdDuplicatas: invoices.length,
       qtdIngressos: naoCanceladas.length ? qtdIngressos : null,
+      valorEmAberto: calcularValorEmAberto(naoCanceladas),
     },
     timeline,
     paymentMethods: Array.from(methodTotals, ([label, value]) => ({ label, value })),
@@ -643,6 +644,50 @@ export function agruparVariacoes(
  * têm o bloco `ingresso` preenchido — planilha de contas a receber não tem
  * nada disso e devolve nulo, o que faz a tela esconder os painéis.
  */
+/**
+ * Leitura do público a partir dos participantes do credenciamento. Reaproveita
+ * a mesma agregação do relatório de ingressos: são a mesma planilha, lida por
+ * módulos diferentes — aqui interessa quem veio, lá quanto entrou.
+ */
+export function agregarPublico(participantes: Participante[]): IngressoStats | null {
+  const comoInvoices: Invoice[] = participantes
+    .filter((p) => p.ingresso)
+    .map((p) => ({
+      id: "",
+      numero: "",
+      cliente: p.nome,
+      cnpj: p.documento,
+      valor: p.valor ?? 0,
+      status: p.statusPagamento ?? "pago",
+      forma: "",
+      vencimento: "",
+      pagamento: null,
+      ingresso: p.ingresso,
+    }));
+  return agregarIngresso(comoInvoices);
+}
+
+/**
+ * Em aberto = o que foi cobrado menos o que entrou. Linha sem valor devido
+ * informado fica de fora: contar devido zero viraria crédito a favor.
+ *
+ * Roda no lugar da agregação completa de público, que custava ~35ms sobre 11
+ * mil duplicatas para alimentar um cartão só.
+ */
+function calcularValorEmAberto(invoices: Invoice[]): number | null {
+  let devido = 0;
+  let pago = 0;
+  let temDevido = false;
+  for (const i of invoices) {
+    const d = i.ingresso?.valorDevido;
+    if (d == null) continue;
+    temDevido = true;
+    devido += d;
+    pago += i.valor;
+  }
+  return temDevido ? Math.max(0, devido - pago) : null;
+}
+
 function agregarIngresso(invoices: Invoice[]): IngressoStats | null {
   const comDados = invoices.filter((i) => i.ingresso && i.status !== "cancelado");
   if (!comDados.length) return null;
@@ -785,20 +830,56 @@ export const CREDENCIAMENTO_FIELDS = [
   { key: "documento", label: "Documento (CPF/RG)", required: true, grupo: "Quem" },
   { key: "categoria", label: "Categoria", required: false, grupo: "Quem" },
 
-  { key: "status", label: "Status", required: true, grupo: "Credenciamento" },
+  // O status do credenciamento em si raramente vem na planilha: o que o
+  // relatório traz é a situação de pagamento do ingresso. Ela é o campo que
+  // passa pelo de-para (Pago / Em aberto / Isento / Cancelado); a situação da
+  // credencial sai do "Compareceu" quando não houver coluna própria.
+  { key: "statusCredenciamento", label: "Status do credenciamento (se houver)", required: false, grupo: "Credenciamento" },
   { key: "credenciadoEm", label: "Data de credenciamento", required: false, grupo: "Credenciamento" },
   { key: "checkinEm", label: "Data/hora do check-in", required: false, grupo: "Credenciamento" },
+
+  // Colunas do relatório de credenciamento que descrevem a presença e o
+  // perfil de quem veio. Todas opcionais: nem todo evento exporta tudo.
+  { key: "compareceu", label: "Compareceu", required: false, grupo: "Presença" },
+  { key: "dataComparecimento", label: "Data do comparecimento", required: false, grupo: "Presença" },
+  { key: "horaComparecimento", label: "Hora do comparecimento", required: false, grupo: "Presença" },
+
+  { key: "convite", label: "Origem do convite / lote", required: false, grupo: "Perfil do público" },
+  { key: "cargo", label: "Cargo", required: false, grupo: "Perfil do público" },
+  { key: "segmento", label: "Segmento", required: false, grupo: "Perfil do público" },
+  { key: "estado", label: "Estado", required: false, grupo: "Perfil do público" },
+  { key: "pais", label: "País", required: false, grupo: "Perfil do público" },
+
+  { key: "status", label: "Situação do pagamento", required: true, grupo: "Pagamento do ingresso" },
+  { key: "valor", label: "Valor pago", required: false, grupo: "Pagamento do ingresso" },
+  { key: "valorDevido", label: "Valor a pagar (devido)", required: false, grupo: "Pagamento do ingresso" },
 ] as const;
 
 export type CredenciamentoFieldKey = (typeof CREDENCIAMENTO_FIELDS)[number]["key"];
 
 const CREDENCIAMENTO_FIELD_KEYWORDS: { key: CredenciamentoFieldKey; patterns: RegExp[] }[] = [
   { key: "documento", patterns: [/documento/, /\bcpf\b/, /\brg\b/, /identidade/] },
-  { key: "checkinEm", patterns: [/check.?in/, /entrada/, /presen[cç]a/] },
+  // presença antes de check-in: no relatório de credenciamento é a coluna
+  // "Compareceu" que diz quem passou, e ela seria capturada pelo padrão de
+  // check-in se viesse depois
+  { key: "compareceu", patterns: [/^compareceu$/, /^presen[cç]a$/] },
+  { key: "dataComparecimento", patterns: [/data.?hora.*(impress|check|comparec|entrada)/, /data.*impress/, /data.*check.?in/, /data.*comparec/, /data.*entrada/] },
+  { key: "horaComparecimento", patterns: [/hora.*impress/, /hora.*check.?in/, /hora.*comparec/, /hora.*entrada/] },
+  { key: "checkinEm", patterns: [/check.?in/, /entrada/] },
   { key: "credenciadoEm", patterns: [/credenciad/, /inscri[cç][aã]o/, /cadastro/, /registro/] },
-  { key: "categoria", patterns: [/categoria/, /\btipo\b/, /perfil/] },
-  { key: "status", patterns: [/status/, /situa[cç][aã]o/] },
-  { key: "nome", patterns: [/nome/, /participante/, /visitante/, /convidado/] },
+  { key: "convite", patterns: [/^edi[cç][aã]o$/, /lote/, /convidado de/, /origem.*convite/] },
+  { key: "categoria", patterns: [/^categoria$/, /categoria/, /tipo.*ingresso/, /nome ingresso/, /perfil/] },
+  // "CARGOS" (lista padronizada) antes de "CARGO" (texto livre digitado pelo
+  // participante): a primeira agrupa, a segunda tem um valor por pessoa.
+  { key: "cargo", patterns: [/^cargos$/, /^cargo$/, /fun[cç][aã]o/] },
+  { key: "segmento", patterns: [/^segmentos?$/, /[aá]rea de atua/] },
+  { key: "estado", patterns: [/^estado$/, /\buf\b/, /estado comercial/] },
+  { key: "pais", patterns: [/^pa[ií]s$/, /pa[ií]s comercial/] },
+  { key: "valorDevido", patterns: [/total a pagar$/, /valor a pagar/, /valor devido/] },
+  { key: "valor", patterns: [/total pago/, /^valor$/, /valor pago/] },
+  { key: "statusCredenciamento", patterns: [/status.*credenc/, /situa[cç][aã]o.*credenc/] },
+  { key: "status", patterns: [/^pagamento$/, /situa[cç][aã]o.*pagamento/, /status.*pagamento/, /situa[cç][aã]o/, /status/] },
+  { key: "nome", patterns: [/nome completo/, /nome.*participante/, /^nome$/, /participante/, /visitante/, /convidado/] },
 ];
 
 export function suggestCredenciamentoMapping(headers: string[]): ColumnMapping<CredenciamentoFieldKey> {
@@ -818,7 +899,7 @@ export function suggestCredenciamentoStatusMapping(values: string[]): StatusMapp
 export function mapRowsToParticipantes(
   table: SheetTable,
   mapping: ColumnMapping<CredenciamentoFieldKey>,
-  statusMapping: StatusMapping<CredenciamentoStatus>,
+  statusMapping: StatusMapping<InvoiceStatus>,
   sourceFile: string
 ): Participante[] {
   const idx = (key: CredenciamentoFieldKey) => {
@@ -831,16 +912,69 @@ export function mapRowsToParticipantes(
   const iCredenciadoEm = idx("credenciadoEm");
   const iCheckinEm = idx("checkinEm");
   const iStatus = idx("status");
+  const iStatusCred = idx("statusCredenciamento");
+  const iCompareceu = idx("compareceu");
+  const iDataComp = idx("dataComparecimento");
+  const iHoraComp = idx("horaComparecimento");
+  const iConvite = idx("convite");
+  const iCargo = idx("cargo");
+  const iSegmento = idx("segmento");
+  const iEstado = idx("estado");
+  const iPais = idx("pais");
+  const iValor = idx("valor");
+  const iValorDevido = idx("valorDevido");
+
+  // A situação da credencial (quando a planilha tem uma coluna própria) não
+  // passa pelo de-para — esse agora é da situação de pagamento. Classificamos
+  // pelos mesmos termos de sempre.
+  const mapaCredenciamento =
+    iStatusCred >= 0 ? suggestCredenciamentoStatusMapping(distinctValues(table, table.headers[iStatusCred])) : {};
+
+  // Data e hora podem vir num campo só ("21/07/2026 14:25") — nesse caso a
+  // coluna de hora fica vazia e a de data carrega as duas informações.
+  const temColunaHora = iHoraComp >= 0;
+
+  const temPerfil =
+    iCompareceu >= 0 || iDataComp >= 0 || iConvite >= 0 || iCargo >= 0 || iSegmento >= 0 || iEstado >= 0 || iPais >= 0;
 
   return table.rows.map((r, i) => {
     const rawStatus = iStatus >= 0 ? r[iStatus] : "";
+    const separado = iDataComp >= 0 ? separarDataHora(r[iDataComp] ?? "") : { data: "", hora: "" };
+    const dataComp = separado.data;
+    const horaDaData = separado.hora;
+    const horaComp = temColunaHora && r[iHoraComp] ? r[iHoraComp] : horaDaData;
     return {
       nome: iNome >= 0 ? r[iNome] : "",
       documento: iDoc >= 0 && r[iDoc] ? r[iDoc] : `${sourceFile}#${i + 1}`,
       categoria: iCategoria >= 0 ? r[iCategoria] : "",
       credenciadoEm: iCredenciadoEm >= 0 && r[iCredenciadoEm] ? r[iCredenciadoEm] : null,
       checkinEm: iCheckinEm >= 0 && r[iCheckinEm] ? r[iCheckinEm] : null,
-      status: statusMapping[rawStatus] ?? "pendente",
+      // sem coluna própria de credenciamento, quem passou pela catraca está
+      // credenciado e o resto fica pendente — é a leitura que o relatório permite
+      status:
+        iStatusCred >= 0
+          ? mapaCredenciamento[r[iStatusCred] ?? ""] ?? "pendente"
+          : iCompareceu >= 0
+          ? parseSimNao(r[iCompareceu])
+            ? "credenciado"
+            : "pendente"
+          : "credenciado",
+      valor: iValor >= 0 && r[iValor] ? parseValor(r[iValor]) : null,
+      statusPagamento: iStatus >= 0 ? statusMapping[rawStatus] ?? null : null,
+      ingresso: temPerfil
+        ? {
+            compareceu: iCompareceu >= 0 ? parseSimNao(r[iCompareceu]) : null,
+            valorDevido: iValorDevido >= 0 && r[iValorDevido] ? parseValor(r[iValorDevido]) : null,
+            convite: iConvite >= 0 ? r[iConvite] : "",
+            categoria: iCategoria >= 0 ? r[iCategoria] : "",
+            cargo: iCargo >= 0 ? r[iCargo] : "",
+            segmento: iSegmento >= 0 ? r[iSegmento] : "",
+            estado: iEstado >= 0 ? normalizarEstado(r[iEstado]) : "",
+            pais: iPais >= 0 ? r[iPais] : "",
+            dataComparecimento: dataComp,
+            horaComparecimento: horaComp,
+          }
+        : null,
       sourceFile,
     };
   });
@@ -880,14 +1014,23 @@ export function aggregateCredenciamento(participantes: Participante[]): Credenci
     checkins: checkinsPorDia.get(date) ?? 0,
   }));
 
+  // Com a coluna "Compareceu" na planilha, quem responde presença é ela —
+  // é o registro real da catraca, não o check-in deduzido.
+  const publico = agregarPublico(participantes);
+
   return {
     asOf: new Date().toISOString(),
     kpis: {
       totalCredenciados,
-      presencaConfirmada,
+      presencaConfirmada: publico ? publico.compareceram : presencaConfirmada,
       checkinsRealizados,
-      taxaComparecimento: totalCredenciados ? (checkinsRealizados / totalCredenciados) * 100 : null,
+      taxaComparecimento: publico
+        ? publico.taxaComparecimento
+        : totalCredenciados
+        ? (checkinsRealizados / totalCredenciados) * 100
+        : null,
     },
+    publico,
     timeline,
     categorias: Array.from(categoriaTotals, ([label, value]) => ({ label, value })),
     statusBreakdown: Array.from(statusTotals, ([label, value]) => ({ label, value })),
@@ -930,6 +1073,23 @@ export const OPERACIONAL_FIELDS = [
 ] as const;
 
 export type OperacionalFieldKey = (typeof OPERACIONAL_FIELDS)[number]["key"];
+
+/**
+ * Listagem geral de expositores da edição — uma planilha só, sem status e sem
+ * serviço. Serve de denominador: "137 de 210 expositores contrataram".
+ */
+export const EXPOSITOR_FIELDS = [
+  { key: "expositor", label: "Expositor (razão social)", required: true, grupo: "Quem é" },
+  { key: "nomeFantasia", label: "Nome fantasia", required: false, grupo: "Quem é" },
+  { key: "cnpj", label: "CNPJ / CPF", required: false, grupo: "Quem é" },
+
+  { key: "estande", label: "Nº do estande", required: false, grupo: "Onde fica" },
+  { key: "localizacao", label: "Localização (pavilhão/setor)", required: false, grupo: "Onde fica" },
+  { key: "tipoEstande", label: "Tipo de estande / montagem", required: false, grupo: "Onde fica" },
+  { key: "area", label: "Área (m²)", required: false, grupo: "Onde fica" },
+] as const;
+
+export type ExpositorFieldKey = (typeof EXPOSITOR_FIELDS)[number]["key"];
 
 // Declarado aqui (e não junto dos helpers abaixo) porque OPERACIONAL_FIELD_KEYWORDS
 // referencia esta regex na avaliação do módulo — const não sofre hoisting.
@@ -1072,6 +1232,85 @@ export function servicoFromFileName(fileName: string, contexto: string[] = []): 
 
 export function suggestOperacionalMapping(headers: string[]): ColumnMapping<OperacionalFieldKey> {
   return suggestMapping(headers, OPERACIONAL_FIELD_KEYWORDS);
+}
+
+// mesmas palavras-chave do operacional, restritas aos campos da listagem: a
+// planilha de expositores vem do mesmo sistema e usa os mesmos cabeçalhos.
+const EXPOSITOR_KEYS = new Set<string>(EXPOSITOR_FIELDS.map((f) => f.key));
+
+export function suggestExpositorMapping(headers: string[]): ColumnMapping<ExpositorFieldKey> {
+  const keywords = OPERACIONAL_FIELD_KEYWORDS.filter((k) => EXPOSITOR_KEYS.has(k.key)) as {
+    key: ExpositorFieldKey;
+    patterns: RegExp[];
+  }[];
+  return suggestMapping(headers, keywords);
+}
+
+export function mapRowsToExpositores(
+  table: SheetTable,
+  mapping: ColumnMapping<ExpositorFieldKey>,
+  _statusMapping: unknown,
+  sourceFile: string
+): ExpositorBase[] {
+  const idx = (key: ExpositorFieldKey) => {
+    const col = mapping[key];
+    return col ? table.headers.indexOf(col) : -1;
+  };
+  const iExpositor = idx("expositor");
+  const iFantasia = idx("nomeFantasia");
+  const iCnpj = idx("cnpj");
+  const iEstande = idx("estande");
+  const iLocalizacao = idx("localizacao");
+  const iTipoEstande = idx("tipoEstande");
+  const iArea = idx("area");
+
+  const vistos = new Set<string>();
+  const lista: ExpositorBase[] = [];
+  for (const r of table.rows) {
+    const expositor = limpar(iExpositor >= 0 ? r[iExpositor] : "");
+    const cnpj = limpar(iCnpj >= 0 ? r[iCnpj] : "");
+    if (!expositor && !cnpj) continue;
+    // a mesma empresa pode repetir (um estande por linha): a base conta
+    // empresas, não estandes
+    const chave = chaveExpositor(expositor, cnpj);
+    if (vistos.has(chave)) continue;
+    vistos.add(chave);
+    lista.push({
+      expositor,
+      nomeFantasia: limpar(iFantasia >= 0 ? r[iFantasia] : ""),
+      cnpj,
+      estande: limpar(iEstande >= 0 ? r[iEstande] : ""),
+      localizacao: limpar(iLocalizacao >= 0 ? r[iLocalizacao] : ""),
+      tipoEstande: limpar(iTipoEstande >= 0 ? r[iTipoEstande] : ""),
+      area: iArea >= 0 && r[iArea] ? parseValor(r[iArea]) : null,
+      sourceFile,
+    });
+  }
+  return lista;
+}
+
+// a listagem vem de um relatório em HTML: sobram quebras de linha e espaços
+function limpar(valor: string | undefined): string {
+  return (valor ?? "").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Chave de identidade do expositor: CNPJ (só dígitos) quando existe, senão o
+ * nome normalizado. As planilhas de serviço e a listagem geral nem sempre
+ * escrevem a razão social igual, mas o documento bate.
+ */
+export function chaveExpositor(nome: string | null | undefined, cnpj: string | null | undefined): string {
+  const digitos = (cnpj ?? "").replace(/\D/g, "");
+  if (digitos.length >= 11) return "doc:" + digitos;
+  return (
+    "nome:" +
+    (nome ?? "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim()
+  );
 }
 
 const OPERACIONAL_STATUS_KEYWORDS: { value: ServicoStatus; patterns: RegExp[] }[] = [
@@ -1251,7 +1490,10 @@ export function tipoEstandeAgrupado(valor: string | null | undefined): string {
     .join(" ");
 }
 
-export function aggregateOperacional(pedidos: PedidoServico[]): OperacionalData {
+export function aggregateOperacional(
+  pedidos: PedidoServico[],
+  expositoresBase: ExpositorBase[] = []
+): OperacionalData {
   // pedido cancelado não vira operação — fica fora dos totais e dos gráficos
   // de volume, mas continua na tabela e na contagem por status.
   const ativos = pedidos.filter((p) => p.status !== "cancelado");
@@ -1290,16 +1532,29 @@ export function aggregateOperacional(pedidos: PedidoServico[]): OperacionalData 
     return Array.from(m, ([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
   };
 
-  // Isenção: itens que não geram cobrança (isento + sem débito) sobre o total
-  // ativo. É a leitura de quanto do serviço saiu de graça para o expositor.
-  const itensIsentos = ativos.filter((p) => p.status === "isento").reduce((s, p) => s + p.quantidade, 0);
+  // Quantos serviços diferentes cada expositor contrata. Conta pares
+  // expositor+serviço (não linhas): o mesmo expositor pedindo recepcionista
+  // em três variações contratou um serviço, não três.
+  const paresExpositorServico = new Set<string>();
+  for (const p of ativos) if (p.expositor && p.servico) paresExpositorServico.add(`${p.expositor}||${p.servico}`);
+
+  // Quem contratou x quem só está na listagem. O cruzamento é por CNPJ e, na
+  // falta dele, pelo nome normalizado — as duas planilhas vêm do mesmo sistema
+  // mas escrevem a razão social de jeitos diferentes.
+  const contratantes = new Set(ativos.map((p) => chaveExpositor(p.expositor, p.cnpj)));
+  const expositoresSemContratacao = expositoresBase.filter(
+    (e) => !contratantes.has(chaveExpositor(e.expositor, e.cnpj))
+  );
 
   return {
     asOf: new Date().toISOString(),
     kpis: {
       totalItens,
-      taxaIsencao: totalItens ? (itensIsentos / totalItens) * 100 : null,
+      servicosPorExpositor: paresExpositorServico.size
+        ? paresExpositorServico.size / new Set(Array.from(paresExpositorServico, (k) => k.split("||")[0])).size
+        : null,
       qtdExpositores: new Set(ativos.map((p) => p.expositor).filter(Boolean)).size,
+      qtdExpositoresBase: expositoresBase.length || null,
       kvaTotal,
     },
     servicos: Array.from(servicoTotals, ([label, value]) => ({ label, value })),
@@ -1312,6 +1567,7 @@ export function aggregateOperacional(pedidos: PedidoServico[]): OperacionalData 
     tiposEstande: Array.from(tipoTotals, ([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value),
     equipamentos: somarPor((p) => p.equipamento),
     tipos: somarPor((p) => p.tipo),
+    expositoresSemContratacao,
     pedidos,
   };
 }

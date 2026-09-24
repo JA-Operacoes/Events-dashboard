@@ -164,19 +164,21 @@ body {
 .rail-recolhida .session-row { flex-direction: column; gap: 6px; }
 .rail-recolhida .session-row .btn { padding: 6px 8px; font-size: 11px; }
 
-/* Puxador do menu. Fica no fluxo, alinhado à direita: a sidebar tem
-   overflow-y, então um botão em position:absolute estourando a borda seria
-   recortado. */
+/* Controle do menu com rótulo visível. A versão anterior era um círculo de
+   24px com uma seta — some na tela e não diz o que faz para quem não conhece o
+   padrão de sidebar recolhível. */
 .rail-toggle {
-  align-self: flex-end; margin-bottom: -18px;
-  width: 24px; height: 24px; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  border: 1px solid var(--line); background: var(--panel); color: var(--ink-dim);
-  font-size: 13px; line-height: 1; cursor: pointer; padding: 0; flex-shrink: 0;
-  transition: color .15s, border-color .15s;
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 9px 10px; border-radius: 8px; flex-shrink: 0;
+  border: 1px solid var(--line); background: var(--panel-2); color: var(--ink-dim);
+  font-family: var(--sans); font-size: 12px; font-weight: 600; cursor: pointer;
+  transition: color .15s, border-color .15s, background .15s;
 }
-.rail-toggle:hover { color: var(--ink); border-color: var(--accent); }
-.rail-recolhida .rail-toggle { align-self: center; }
+.rail-toggle:hover { color: var(--ink); border-color: var(--accent); background: var(--accent-soft); }
+.rail-toggle-seta { font-size: 13px; line-height: 1; }
+/* recolhida, sobra só a seta — e ela ganha o card inteiro para ser clicável */
+.rail-recolhida .rail-toggle { justify-content: center; padding: 9px 0; }
+.rail-recolhida .rail-toggle-texto { display: none; }
 
 .mobile-nav-toggle { display: none; }
 
@@ -386,7 +388,10 @@ body {
 }
 .btn:hover { border-color: var(--accent); transform: translateY(-1px); }
 .btn:active { transform: translateY(0); }
-.btn.primary { background: var(--accent); color: #fff; border-color: transparent; }
+/* --sobre-accent é definido pelo Shell a partir da cor da marca do evento:
+   marca clara pede texto escuro, marca escura pede texto claro. O branco fixo
+   de antes sumia em cima de cores claras, sobretudo no tema escuro. */
+.btn.primary { background: var(--accent); color: var(--sobre-accent, #fff); border-color: transparent; }
 .btn.primary:hover { filter: brightness(1.08); }
 .btn.danger { background: var(--red); color: #fff; border-color: transparent; }
 .btn.danger:hover { filter: brightness(1.1); }
@@ -499,10 +504,14 @@ body {
    alto definia a altura e os outros ficavam com um vão morto embaixo. Agora o
    card ocupa a linha inteira e o conteúdo se espalha dentro dele, se ajustando
    ao tamanho da tela em vez de depender de altura fixa. */
+/* Coluna flex para o conteúdo poder ocupar a altura do card. Sem height:100%
+   de propósito: quem está numa grade já estica sozinho (align-items: stretch),
+   e um painel solto herdaria a altura do .main esticado — era o que abria
+   crateras entre as barras num painel de largura inteira. */
 .panel {
   border: 1px solid var(--line); border-radius: 13px; background: var(--panel);
   padding: 14px 15px 12px; position: relative;
-  display: flex; flex-direction: column; height: 100%;
+  display: flex; flex-direction: column;
 }
 /* o corpo do painel (gráfico, lista, tabela) puxa a sobra de altura;
    min-height: 0 para o scroll interno funcionar dentro do flex */
@@ -531,15 +540,25 @@ body {
    altura para a lista lá dentro */
 .ranking-lista > .ranking-grupo { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
 .ranking-vazio { margin: 0; font-size: 11.5px; color: var(--ink-mute); font-family: var(--mono); }
+/* Lista de nomes sem barra (quem não contratou nada): não há valor para
+   comparar, só a identificação de quem procurar. */
+.lista-simples { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.lista-simples li {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  padding: 7px 0; border-bottom: 1px solid var(--line-soft); font-size: 12.5px;
+}
+.lista-simples li:last-child { border-bottom: none; }
+.lista-simples-nome { color: var(--ink-dim); overflow-wrap: anywhere; }
+.lista-simples-extra { color: var(--ink-mute); font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
 /* o SVG mantém a proporção (esticá-lo deformaria os rótulos); o wrapper é que
    cresce e o centraliza na sobra de altura */
 .chart-wrap { position: relative; display: flex; align-items: center; }
 .chart-wrap > svg { width: 100%; max-height: 100%; }
-/* linhas de status distribuídas: com 4 status num card alto, empilhá-las no
-   topo deixava metade do card vazia */
-.panel > .statusbars-list { display: flex; flex-direction: column; justify-content: space-between; }
-.panel > .statusbars-row { align-content: stretch; }
-.statusbars-cell { justify-content: space-between; }
+/* Status empilhados: cada um é um sub-cartão com a barra dentro e o número em
+   evidência. Crescem para ocupar o card, com teto — espalhá-los pela altura
+   toda afastava quatro linhas em quase 100px cada. */
+.panel > .statusbars-list { display: flex; flex-direction: column; gap: 8px; justify-content: flex-start; }
+.panel > .statusbars-list > .status-card { flex: 1 1 auto; max-height: 92px; }
 .panel > .donut-wrap { align-content: center; }
 .panel > .empty { padding: 26px 10px; }
 /* rodapés e legendas continuam colados embaixo */
@@ -567,13 +586,17 @@ body {
 .empty strong { font-size: 12.5px; color: var(--ink-dim); }
 .empty span { font-size: 11.5px; color: var(--ink-mute); max-width: 300px; font-family: var(--mono); }
 
-.barlist { display: flex; flex-direction: column; gap: 10px; }
-/* Dentro de um card, a lista ocupa a altura toda e distribui as linhas: com 10
-   nomes num painel alto (a altura vem do donut ao lado), empilhá-las no topo
-   deixava um terço do card vazio. Quando a lista rola, volta ao normal — aí o
-   espaço já está todo ocupado. */
-.panel .barlist { flex: 1 1 auto; justify-content: space-between; }
-.barlist-scroll .barlist { flex: 0 0 auto; justify-content: flex-start; }
+.barlist { display: flex; flex-direction: column; gap: 25px; }
+/* Dentro de um card, a lista ocupa a altura toda: as linhas crescem para
+   preencher, mas com teto. Distribuir a sobra igualmente (space-between)
+   funcionava com 10 nomes e virava cratera com 4 — o teto mantém a leitura
+   compacta e joga o que sobrar para o fim do card. */
+.panel .barlist { flex: 1 1 auto; justify-content: flex-start; }
+.panel .barlist > * { flex: 1 1 auto; }
+.panel .barlist .barlist-row { max-height: 34px; align-content: center; }
+.panel .barlist .barlist-row-stacked { max-height: 58px; }
+.barlist-scroll .barlist { flex: 0 0 auto; }
+.barlist-scroll .barlist > * { flex: 0 0 auto; }
 /* nome flexível em vez de 110px fixos: com rótulos como "Gerente ou
    Supervisor de Empresa" o corte ficava cedo demais */
 .barlist-row { display: grid; grid-template-columns: minmax(80px, 1.3fr) 1fr auto; align-items: center; gap: 10px; font-size: 12px; }
@@ -611,7 +634,9 @@ body {
 .status-val { font-family: var(--mono); font-size: 12.5px; color: var(--ink-mute); }
 
 .table-wrap { border: 1px solid var(--line); border-radius: 13px; background: var(--panel); overflow: hidden; }
-.table-scroll { overflow-x: auto; overscroll-behavior-x: contain; }
+/* altura limitada para o cabeçalho sticky ter contra o que grudar: rolando
+   uma lista longa, os nomes das colunas continuam à vista */
+.table-scroll { overflow: auto; overscroll-behavior-x: contain; max-height: 70vh; }
 table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 thead th {
   text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
@@ -643,6 +668,10 @@ td.num, th.num { text-align: right; }
 .badge.atrasado .dot { background: var(--red); }
 .badge.cancelado { color: var(--ink-mute); background: color-mix(in srgb, var(--ink-mute) 16%, transparent); }
 .badge.cancelado .dot { background: var(--ink-mute); }
+/* Cortesia/isento em cinza (nada a cobrar) e cancelado em vermelho: antes os
+   dois dividiam o mesmo cinza e não dava para separar um do outro. */
+.badge.cortesia { color: var(--ink-mute); background: color-mix(in srgb, var(--ink-mute) 16%, transparent); }
+.badge.cortesia .dot { background: var(--ink-mute); }
 
 .table-foot { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; font-size: 11.5px; color: var(--ink-mute); font-family: var(--mono); }
 
@@ -698,6 +727,25 @@ td.num, th.num { text-align: right; }
 .timeline-bar { height: 6px; border-radius: 3px; background: var(--line-soft); overflow: hidden; }
 .timeline-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width .4s; }
 .timeline-labels { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 11px; color: var(--ink-mute); margin-top: 6px; }
+.timeline-bar { position: relative; }
+/* marca de um dia de credenciamento na régua do período */
+.timeline-marca {
+  position: absolute; top: -3px; width: 3px; height: 12px; border-radius: 2px;
+  background: var(--teal); transform: translateX(-1px);
+}
+.timeline-dias { list-style: none; margin: 14px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.timeline-dias li {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  font-size: 12px; padding: 5px 0; border-bottom: 1px solid var(--line-soft);
+}
+.timeline-dias li:last-child { border-bottom: none; }
+.timeline-dia-data { color: var(--ink-dim); font-family: var(--mono); }
+.timeline-dia-valor { color: var(--ink-mute); font-family: var(--mono); font-size: 11.5px; }
+
+/* módulo na visão geral: quantidade em cima, quando foi atualizado embaixo */
+.modulo-atualizacao { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; text-align: right; }
+.modulo-atualizacao strong { color: var(--ink); font-size: 12.5px; }
+.modulo-atualizacao em { font-style: normal; font-size: 11px; color: var(--ink-mute); }
 
 .module-card { position: relative; padding-left: 22px; }
 .module-accent { position: absolute; left: 0; top: 12px; bottom: 12px; width: 3px; border-radius: 2px; }
@@ -793,6 +841,46 @@ td.num, th.num { text-align: right; }
 .import-badge {
   font-family: var(--mono); font-size: 11px; color: var(--violet); border: 1px solid var(--violet); border-radius: 100px;
   padding: 5px 11px; background: color-mix(in srgb, var(--violet) 12%, transparent);
+}
+
+/* Barra de filtros ativos: fica logo abaixo do título, em linguagem direta,
+   com um "✕" por filtro e um botão grande para voltar à visão completa. */
+.filtros-ativos {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  border: 1px solid var(--accent); border-radius: 10px; padding: 10px 14px; margin-bottom: 16px;
+  background: var(--accent-soft);
+}
+.filtros-ativos-titulo { font-size: 12.5px; font-weight: 700; color: var(--ink); }
+.filtro-chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  border: 1px solid var(--line); border-radius: 100px; padding: 5px 10px 5px 12px;
+  background: var(--panel); color: var(--ink-dim); font: inherit; font-size: 12px;
+  cursor: pointer; transition: border-color .15s, color .15s;
+}
+.filtro-chip:hover { border-color: var(--danger); color: var(--ink); }
+.filtro-chip strong { color: var(--ink); font-weight: 700; }
+.filtro-chip-rotulo { color: var(--ink-mute); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.filtro-chip-x {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; border-radius: 50%; background: var(--line-soft);
+  font-size: 10px; line-height: 1;
+}
+.filtro-chip:hover .filtro-chip-x { background: var(--danger); color: #fff; }
+.filtros-limpar { margin-left: auto; }
+
+/* "Mostrar mais" no lugar dos botões ‹ ›: um alvo grande e escrito, em vez de
+   duas setinhas e um contador de páginas para decorar. */
+.btn-mostrar-mais { padding: 9px 16px; font-size: 12.5px; font-weight: 700; }
+/* volta a lista ao tamanho inicial — "mostrar mais" sem caminho de volta deixa
+   a pessoa presa com milhares de linhas na tela */
+.btn-mostrar-menos { padding: 9px 16px; font-size: 12.5px; }
+/* desfazer dentro do painel que aplicou o filtro */
+.btn-ver-tudo { padding: 6px 12px; font-size: 11.5px; white-space: nowrap; }
+
+/* Razão social longa quebra em até duas linhas em vez de esticar a coluna. */
+.td-nome {
+  font-family: var(--sans); color: var(--ink); font-weight: 500;
+  white-space: normal; overflow-wrap: anywhere; min-width: 190px; max-width: 330px; line-height: 1.35;
 }
 
 .conta-focus-banner {
@@ -977,16 +1065,45 @@ input.field[type="date"] { font-family: var(--mono); width: 140px; cursor: text;
 
 /* Status lado a lado (financeiro → ingressos): poucos status, leitura de
    proporção. Cada célula traz badge, número, barra e percentual. */
-.statusbars-row { display: flex; gap: 10px; flex-wrap: wrap; }
+/* Status lado a lado. Em grade com subgrid, para que rótulo, número, barra e
+   percentual fiquem na mesma altura em todos os cartões — com flex, um rótulo
+   que quebrava em duas linhas empurrava a barra daquele cartão para baixo e as
+   barras ficavam em degraus. */
+.statusbars-row {
+  display: grid; gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
 .statusbars-cell {
-  flex: 1 1 120px; display: flex; flex-direction: column; gap: 4px;
+  display: grid; grid-row: span 4; grid-template-rows: subgrid; row-gap: 4px;
   border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
   background: var(--panel-2);
 }
+/* navegadores sem subgrid: volta ao empilhamento simples, sem o alinhamento
+   entre cartões, mas sem quebrar o layout */
+@supports not (grid-template-rows: subgrid) {
+  .statusbars-row { display: flex; flex-wrap: wrap; }
+  .statusbars-cell { flex: 1 1 150px; display: flex; flex-direction: column; gap: 4px; }
+}
 .statusbars-cell .badge { align-self: flex-start; }
 .statusbars-value { font-size: 16px; font-weight: 700; font-family: var(--mono); font-variant-numeric: tabular-nums; line-height: 1.15; }
-.statusbars-cell .barlist-track { width: 100%; }
+.statusbars-cell .barlist-track { width: 100%; align-self: center; }
 .statusbars-pct { font-size: 11px; color: var(--ink-mute); font-family: var(--mono); }
+
+/* Sub-cartão de status (layout em lista). Mesma linguagem visual do layout
+   lado a lado, para os dois modos não parecerem componentes diferentes. */
+.statusbars-list { display: flex; flex-direction: column; gap: 8px; }
+.status-card {
+  display: grid; row-gap: 6px; align-content: center;
+  border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px;
+  background: var(--panel-2);
+}
+.status-card-topo { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.status-card-valor {
+  font-family: var(--mono); font-size: 17px; font-weight: 700; color: var(--ink);
+  font-variant-numeric: tabular-nums; line-height: 1.1;
+}
+.status-card .barlist-track { width: 100%; }
+.status-card-pct { font-size: 11px; color: var(--ink-mute); font-family: var(--mono); }
 
 /* Navegação de páginas no rodapé da tabela. */
 .pager { display: inline-flex; align-items: center; gap: 8px; }

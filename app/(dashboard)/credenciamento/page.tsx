@@ -1,17 +1,18 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useDeferredValue } from "react";
 import { useEvent } from "@/lib/eventContext";
 import { useI18n } from "@/lib/i18n";
 import { useAuth } from "@/lib/auth";
 import { fetchCredenciamento, type CredenciamentoData, type CredenciamentoFilters, type Participante } from "@/lib/dataSource";
-import { ConnChip, Empty, EmptyTableRow, KpiRow, int, pct } from "@/components/ui";
+import { ConnChip, Empty, EmptyTableRow, KpiRow, int, money, pct } from "@/components/ui";
 import { SpreadsheetImportCredenciamento } from "@/components/SpreadsheetImport";
 import { aggregateCredenciamento, mergeImportedParticipantes } from "@/lib/spreadsheetImport";
 import { Donut, StatusBars, LineChart } from "@/components/charts";
+import { BarraDiasEvento, PaineisPublico } from "@/components/publico";
 import { getCached, setCached } from "@/lib/pageCache";
 import { enviarImportEmLotes } from "@/lib/importClient";
-import { matchesPeriod, formatRelativeTime } from "@/lib/period";
+import { matchesPeriod, formatRelativeTime, parseDateLoose } from "@/lib/period";
 import { notifySuccess, notifyWarning, notifyError } from "@/lib/swal";
 
 export default function CredenciamentoPage() {
@@ -22,6 +23,16 @@ export default function CredenciamentoPage() {
   const [categoria, setCategoria] = useState<CredenciamentoFilters["categoria"]>("all");
   const [statusFilter, setStatusFilter] = useState<CredenciamentoFilters["status"]>("all");
   const [search, setSearch] = useState("");
+  // dia do evento: recorta cartões, painéis e tabela. Só aparece quando a
+  // planilha traz a data do comparecimento.
+  const [diaEvento, setDiaEvento] = useState("todos");
+  /**
+   * Busca adiada: digitar refiltra milhares de linhas e refaz a agregação a
+   * cada tecla. Com useDeferredValue o campo responde na hora e o recálculo
+   * acontece com a última letra digitada, sem travar a digitação.
+   */
+  const buscaAplicada = useDeferredValue(search);
+
   const [connState, setConnState] = useState<"pending" | "connected" | "error">("pending");
   const [apiData, setApiData] = useState<CredenciamentoData | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
@@ -39,20 +50,51 @@ export default function CredenciamentoPage() {
   );
 
   const filteredParticipantes = useMemo(() => {
-    const term = search.trim().toLowerCase();
+    const term = buscaAplicada.trim().toLowerCase();
     return rawParticipantes.filter((p) => {
       if (statusFilter !== "all" && p.status !== statusFilter) return false;
       if (categoria !== "all" && p.categoria !== categoria) return false;
       if (!matchesPeriod(p.credenciadoEm, period)) return false;
+      if (diaEvento !== "todos" && p.ingresso?.dataComparecimento?.trim() !== diaEvento) return false;
       if (term && !`${p.nome} ${p.documento}`.toLowerCase().includes(term)) return false;
       return true;
     });
-  }, [rawParticipantes, statusFilter, categoria, period, search]);
+  }, [rawParticipantes, statusFilter, categoria, period, buscaAplicada, diaEvento]);
+
+  // Dias com movimento registrado. Saem da lista crua (e não do resultado já
+  // filtrado) para os botões não sumirem conforme se escolhe um dia.
+  const diasDoEvento = useMemo(() => {
+    const dias = new Set<string>();
+    for (const p of rawParticipantes) {
+      const d = p.ingresso?.dataComparecimento?.trim();
+      if (d) dias.add(d);
+    }
+    return Array.from(dias).sort((a, b) => parseDateLoose(a) - parseDateLoose(b));
+  }, [rawParticipantes]);
+
+  // Público por dia ignorando o filtro de dia: com ele, o gráfico viraria uma
+  // barra só e não haveria com o que comparar o dia escolhido.
+  const publicoPorDia = useMemo(() => {
+    const porDia = new Map<string, number>();
+    for (const p of rawParticipantes) {
+      if (statusFilter !== "all" && p.status !== statusFilter) continue;
+      if (categoria !== "all" && p.categoria !== categoria) continue;
+      const d = p.ingresso?.dataComparecimento?.trim();
+      if (d) porDia.set(d, (porDia.get(d) ?? 0) + 1);
+    }
+    return Array.from(porDia, ([name, value]) => ({ name, value })).sort(
+      (a, b) => parseDateLoose(a.name) - parseDateLoose(b.name)
+    );
+  }, [rawParticipantes, statusFilter, categoria]);
 
   const data = useMemo(
     () => (apiData || hasImported ? aggregateCredenciamento(filteredParticipantes) : null),
     [apiData, hasImported, filteredParticipantes]
   );
+
+  // A coluna de valor só aparece quando a planilha traz o dado; sem isso seria
+  // uma coluna inteira de traços.
+  const mostrarValor = rawParticipantes.some((p) => p.valor != null);
 
   const importedFiles = Array.from(
     importedParticipantes.reduce((map, p) => {
@@ -214,6 +256,19 @@ export default function CredenciamentoPage() {
         onEditValue={(key, v) => setKpiOverrides((prev) => ({ ...prev, [key]: v }))}
       />
 
+      <BarraDiasEvento dias={diasDoEvento} selecionado={diaEvento} onSelecionar={setDiaEvento} />
+
+      {/* Leitura do público — comparecimento, fluxo e perfil de quem veio.
+          Só aparece quando a planilha importada traz essas colunas. */}
+      {data?.publico && (
+        <PaineisPublico
+          publico={data.publico}
+          publicoPorDia={publicoPorDia}
+          diaSelecionado={diaEvento}
+          onSelecionarDia={setDiaEvento}
+        />
+      )}
+
       <div className="panels">
         <div className="panel">
           <div className="panel-head">
@@ -252,11 +307,23 @@ export default function CredenciamentoPage() {
               <h3>{t("credenciamento.categorias.title")}</h3>
               <p>{t("credenciamento.categorias.desc")}</p>
             </div>
+            {categoria !== "all" && (
+              <button className="btn primary btn-ver-tudo" type="button" onClick={() => setCategoria("all")}>
+                ↩ Ver todas as categorias
+              </button>
+            )}
           </div>
           {!data?.categorias.length ? (
             <Empty glyph="◈" title={t("credenciamento.categorias.empty.title")} desc={t("credenciamento.categorias.empty.desc")} />
           ) : (
-            <Donut data={data.categorias} valueFmt={(v) => int(v)} />
+            /* clicar na fatia recorta a tela para aquela categoria, como no
+               operacional — e o botão acima devolve a visão completa */
+            <Donut
+              data={data.categorias}
+              valueFmt={(v) => int(v)}
+              selected={categoria === "all" ? undefined : categoria}
+              onSelect={(nome) => setCategoria((atual) => (atual === nome ? "all" : nome))}
+            />
           )}
         </div>
       </div>
@@ -303,22 +370,28 @@ export default function CredenciamentoPage() {
                 <th>{t("col.categoria")}</th>
                 <th>{t("col.credenciadoEm")}</th>
                 <th>{t("col.checkin")}</th>
+                {mostrarValor && <th className="num">Valor pago</th>}
                 <th>{t("col.status")}</th>
               </tr>
             </thead>
             <tbody>
               {!data?.participantes.length ? (
-                <EmptyTableRow colSpan={6} title={t("credenciamento.table.empty.title")} desc={t("credenciamento.table.empty.desc")} />
+                <EmptyTableRow
+                  colSpan={mostrarValor ? 7 : 6}
+                  title={t("credenciamento.table.empty.title")}
+                  desc={t("credenciamento.table.empty.desc")}
+                />
               ) : (
                 data.participantes.map((p, i) => (
                   // mesmo raciocínio do Financeiro: documento pode se repetir se a
                   // pessoa aparecer em mais de uma planilha/arquivo importado.
                   <tr key={`${p.documento}-${i}`}>
-                    <td style={{ fontFamily: "var(--sans)", color: "var(--ink)" }}>{p.nome}</td>
+                    <td className="td-nome">{p.nome}</td>
                     <td>{p.documento}</td>
                     <td>{p.categoria}</td>
                     <td>{p.credenciadoEm || "—"}</td>
                     <td>{p.checkinEm || "—"}</td>
+                    {mostrarValor && <td className="num">{p.valor != null ? money(p.valor) : "—"}</td>}
                     <td>
                       <span className={`badge ${STATUS_CLASS[p.status]}`}>
                         <span className="dot" />
