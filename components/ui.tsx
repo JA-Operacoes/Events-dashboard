@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useI18n } from "@/lib/i18n";
 
 export const money = (v: number | null) =>
@@ -31,23 +31,24 @@ function useCountUp(value: number | null, fmt: (v: number | null) => string) {
   return text;
 }
 
-export function TiltCard({
-  label,
-  value,
-  fmt,
-  editable,
-  onEdit,
-}: {
-  label: string;
-  value: number | null;
-  fmt: (v: number | null) => string;
-  editable?: boolean;
-  onEdit?: (v: number | null) => void;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
+/**
+ * Número de indicador com a mesma contagem crescente dos cartões padrão.
+ * Existe para os cartões fora do padrão: sem ele, o valor aparecia de uma vez
+ * enquanto os vizinhos subiam, e a linha inteira parecia fora de sincronia.
+ */
+export function KpiValor({ value, fmt }: { value: number | null; fmt: (v: number | null) => string }) {
   const text = useCountUp(value, fmt);
-  const { t } = useI18n();
+  return <>{text}</>;
+}
 
+/**
+ * Moldura dos cartões de indicador: inclinação leve seguindo o ponteiro e o
+ * brilho que acompanha o cursor. Fica separada do TiltCard porque há cartões
+ * fora do padrão (dois números, composições) que precisam do mesmo
+ * comportamento — sem isso eles ficavam "mortos" ao lado dos demais.
+ */
+export function TiltShell({ className = "", children }: { className?: string; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
   const raf = useRef(0);
   const pending = useRef<{ x: number; y: number } | null>(null);
 
@@ -79,7 +80,30 @@ export function TiltCard({
   }
 
   return (
-    <div className="tilt" ref={ref} onPointerMove={onMove} onPointerLeave={onLeave}>
+    <div className={`tilt ${className}`} ref={ref} onPointerMove={onMove} onPointerLeave={onLeave}>
+      {children}
+    </div>
+  );
+}
+
+function TiltCard({
+  label,
+  value,
+  fmt,
+  editable,
+  onEdit,
+}: {
+  label: string;
+  value: number | null;
+  fmt: (v: number | null) => string;
+  editable?: boolean;
+  onEdit?: (v: number | null) => void;
+}) {
+  const text = useCountUp(value, fmt);
+  const { t } = useI18n();
+
+  return (
+    <TiltShell>
       <div className="tilt-inner">
         <div className="kpi-top">
           <span className="kpi-label">{label}</span>
@@ -103,7 +127,7 @@ export function TiltCard({
           {editable ? "editado manualmente (admin)" : value == null ? t("common.kpi.noDataNow") : t("common.kpi.updatedNow")}
         </div>
       </div>
-    </div>
+    </TiltShell>
   );
 }
 
@@ -112,11 +136,15 @@ export function KpiRow<T extends Record<string, number | null>>({
   values,
   editable,
   onEditValue,
+  children,
 }: {
   defs: readonly { key: keyof T & string; label: string; fmt: (v: number | null) => string }[];
   values: T | undefined | null;
   editable?: boolean;
   onEditValue?: (key: keyof T & string, v: number | null) => void;
+  /** Cartões fora do padrão (dois números no mesmo card, por exemplo) entram
+   *  aqui para ficarem na mesma grade, com a mesma largura dos demais. */
+  children?: ReactNode;
 }) {
   return (
     <div className="kpi-row">
@@ -130,6 +158,7 @@ export function KpiRow<T extends Record<string, number | null>>({
           onEdit={(v) => onEditValue?.(def.key, v)}
         />
       ))}
+      {children}
     </div>
   );
 }

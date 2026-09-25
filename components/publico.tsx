@@ -98,17 +98,33 @@ export function PainelRanking({ titulo, abas }: { titulo: string; abas: AbaRanki
       </div>
       {/* fechado, a lista se distribui pela altura do card; aberto, ela rola
           dentro do mesmo card em vez de esticá-lo */}
-      <div className={`ranking-lista ${verTodos ? "barlist-scroll scroll-slim" : ""}`}>
-        {grupos.map((g) => (
-          <div className="ranking-grupo" key={g.titulo || atual.id}>
-            {g.titulo && <span className="section-label">{g.titulo}</span>}
-            <BarList
-              data={verTodos ? g.dados : g.dados.slice(0, RANKING_VISIVEL)}
-              valueFmt={(v) => v.toLocaleString("pt-BR")}
-              layout={atual.layout ?? "row"}
-            />
-          </div>
-        ))}
+      {/* dois grupos (Estado + País) ficam lado a lado: empilhados, cada um
+          sobrava com metade dos itens e o card esticava sem necessidade */}
+      <div
+        className={`ranking-lista ${grupos.length > 1 ? "ranking-lista-pares" : ""} ${
+          verTodos ? "barlist-scroll scroll-slim" : ""
+        }`}
+      >
+        {grupos.map((g) => {
+          const total = g.dados.reduce((soma, d) => soma + d.value, 0);
+          return (
+            <div className="ranking-grupo" key={g.titulo || atual.id}>
+              {g.titulo && <span className="section-label">{g.titulo}</span>}
+              <BarList
+                data={verTodos ? g.dados : g.dados.slice(0, RANKING_VISIVEL)}
+                // o percentual carrega a leitura quando um valor domina: com São
+                // Paulo em 63% do público, a barra do segundo colocado vira um
+                // traço de 6% e só o número diz o tamanho dele
+                valueFmt={(v) =>
+                  total > 0
+                    ? `${v.toLocaleString("pt-BR")} · ${((v / total) * 100).toFixed(v / total < 0.1 ? 1 : 0)}%`
+                    : v.toLocaleString("pt-BR")
+                }
+                layout={atual.layout ?? "row"}
+              />
+            </div>
+          );
+        })}
       </div>
     </div>
   );

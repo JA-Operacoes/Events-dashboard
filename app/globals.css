@@ -459,6 +459,15 @@ body {
    o valor puxa a sobra e o rodapé fica preso na base em todos. */
 .tilt-inner .kpi-value { margin-top: auto; }
 .tilt-inner .kpi-foot { margin-top: 6px; }
+/* As duas parcelas que formam o total, no lugar do rodapé do cartão. */
+.kpi-parcelas { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 6px; }
+.kpi-parcelas span {
+  display: flex; flex-direction: column; gap: 1px;
+  font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim);
+}
+.kpi-parcelas em {
+  font-style: normal; font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-mute);
+}
 .tilt-inner::before {
   content: ""; position: absolute; inset: 0; opacity: 0; transition: opacity .3s;
   background: radial-gradient(180px circle at var(--mx) var(--my), var(--accent-soft), transparent 70%);
@@ -482,7 +491,29 @@ body {
 .donut-wrap { display: flex; align-items: center; justify-content: center; gap: 24px; flex-wrap: wrap; padding: 8px 0; }
 .donut-svg { width: 100%; max-width: 200px; height: auto; flex-shrink: 0; }
 .donut-svg-half { max-width: 240px; }
-.donut-legend { display: flex; flex-direction: column; gap: 10px; min-width: 160px; flex: 1; max-width: 260px; }
+/* Legenda do donut em tabela: as colunas (cor, nome, valor, %) ficam no mesmo
+   lugar em todas as linhas, independentemente do tamanho do rótulo. */
+.donut-legend { border-collapse: collapse; min-width: 200px; flex: 1; max-width: 400px; font-size: 12px; }
+.donut-legend td { padding: 4px 0; vertical-align: middle; }
+.donut-legend th {
+  padding: 0 0 6px; font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--ink-mute); font-weight: 700; border-bottom: 1px solid var(--line-soft);
+}
+/* respiro entre o quadradinho de cor e o nome */
+.donut-legend-cor { width: 10px; padding-right: 10px !important; }
+/* o quadradinho da cor precisa sair do fluxo inline: como <span> solto dentro
+   de um <td>, largura e altura não valem e a cor simplesmente não aparecia */
+.donut-legend-cor .legend-swatch { display: block; width: 10px; height: 10px; border-radius: 3px; }
+.donut-legend-nome {
+  color: var(--ink-dim); padding-right: 10px !important;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; width: 100%;
+}
+.donut-legend-valor,
+.donut-legend-pct {
+  font-family: var(--mono); color: var(--ink-mute); text-align: right;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.donut-legend-pct { width: 44px; padding-left: 8px !important; }
 
 /* Painéis são condicionais: o relatório não trouxe aquela coluna, o filtro
    zerou, o módulo não usa aquele recorte. Com duas colunas fixas, um número
@@ -539,6 +570,11 @@ body {
 /* rankings agrupados (Estado + País na mesma aba) também precisam repassar a
    altura para a lista lá dentro */
 .ranking-lista > .ranking-grupo { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+/* Dois rankings no mesmo card ficam lado a lado. Empilhados, o segundo caía
+   abaixo da dobra do painel e os dois disputavam a mesma altura. */
+.ranking-lista-pares { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 24px; }
+.ranking-lista-pares > .ranking-grupo { min-width: 0; }
+@media (max-width: 720px) { .ranking-lista-pares { grid-template-columns: 1fr; } }
 .ranking-vazio { margin: 0; font-size: 11.5px; color: var(--ink-mute); font-family: var(--mono); }
 /* Lista de nomes sem barra (quem não contratou nada): não há valor para
    comparar, só a identificação de quem procurar. */
@@ -559,19 +595,51 @@ body {
 .energia-resumo strong { font-family: var(--mono); font-size: 14px; color: var(--ink); font-variant-numeric: tabular-nums; }
 .energia-resumo-valor strong { color: var(--accent); }
 
+/* Área rolável da tabela de energia: altura própria, independente do card. */
+.energia-lista { max-height: 420px; overflow: auto; overscroll-behavior: contain; }
+
 /* Tabela dentro de um painel (não é a tabela principal da tela): mesma
    linguagem, sem a moldura própria. */
-.tabela-simples { width: 100%; border-collapse: collapse; font-size: 12px; }
+.tabela-simples { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
+/* Larguras fixas: com colunas automáticas, sete colunas dividiam a linha em
+   partes iguais e os números ficavam longe do próprio cabeçalho. O expositor
+   fica com a sobra, que é o único campo de tamanho imprevisível. */
+.tabela-simples col.col-estande { width: 110px; }
+.tabela-simples col.col-num { width: 104px; }
+.tabela-simples col.col-valor { width: 132px; }
+.tabela-simples td { font-variant-numeric: tabular-nums; }
+.tabela-simples .col-destaque { color: var(--ink); }
 .tabela-simples thead th {
   position: sticky; top: 0; z-index: 1; background: var(--panel);
-  text-align: left; padding: 6px 10px; font-size: 10.5px; text-transform: uppercase;
+  text-align: left; padding: 6px 10px 7px; font-size: 10.5px; text-transform: uppercase;
   letter-spacing: .04em; color: var(--ink-mute); border-bottom: 1px solid var(--line);
+  /* o rótulo desce até a base: com a unidade numa segunda linha, os cabeçalhos
+     de uma linha só ficariam soltos no topo, cada um numa altura */
+  vertical-align: bottom; white-space: nowrap;
+}
+/* coluna numérica alinha o cabeçalho com o número que está embaixo dele. Sem
+   isto o `text-align: left` da regra acima vence `th.num` por especificidade,
+   e o rótulo ficava numa ponta da célula e o valor na outra. */
+.tabela-simples thead th.num { text-align: right; }
+/* unidade numa linha própria, abaixo do rótulo: mantém o cabeçalho estreito o
+   bastante para caber na coluna sem quebrar no meio de uma palavra. */
+.tabela-simples thead .th-uni {
+  display: block; margin-top: 2px; font-size: 9.5px; letter-spacing: .02em;
+  text-transform: none; font-family: var(--mono); font-weight: 400;
+  color: color-mix(in srgb, var(--ink-mute) 72%, transparent);
 }
 .tabela-simples tbody td { padding: 7px 10px; border-bottom: 1px solid var(--line-soft); color: var(--ink-dim); font-family: var(--mono); }
 .tabela-simples tbody tr:last-child td { border-bottom: none; }
 /* estande sem excedente: continua na lista para conferência, mas sem disputar
    atenção com quem tem valor a cobrar */
 .tabela-simples .linha-apagada td { opacity: .55; }
+/* marca de conferência: mesmo estande com mais de uma área no relatório */
+.aviso-area {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; margin-left: 6px; border-radius: 50%;
+  background: color-mix(in srgb, var(--amber) 22%, transparent); color: var(--amber);
+  font-size: 10px; font-weight: 700; cursor: help;
+}
 /* o SVG mantém a proporção (esticá-lo deformaria os rótulos); o wrapper é que
    cresce e o centraliza na sobra de altura */
 .chart-wrap { position: relative; display: flex; align-items: center; }
@@ -608,7 +676,10 @@ body {
 .empty strong { font-size: 12.5px; color: var(--ink-dim); }
 .empty span { font-size: 11.5px; color: var(--ink-mute); max-width: 300px; font-family: var(--mono); }
 
-.barlist { display: flex; flex-direction: column; gap: 25px; }
+.barlist { display: flex; flex-direction: column; gap: 14px; }
+/* o layout empilhado já ocupa duas linhas por item (nome em cima, barra
+   embaixo) — sem um respiro maior, um item encosta no seguinte */
+.barlist:has(.barlist-row-stacked) { gap: 22px; }
 /* Dentro de um card, a lista ocupa a altura toda: as linhas crescem para
    preencher, mas com teto. Distribuir a sobra igualmente (space-between)
    funcionava com 10 nomes e virava cratera com 4 — o teto mantém a leitura
@@ -619,13 +690,25 @@ body {
 .panel .barlist .barlist-row-stacked { max-height: 58px; }
 .barlist-scroll .barlist { flex: 0 0 auto; }
 .barlist-scroll .barlist > * { flex: 0 0 auto; }
-/* nome flexível em vez de 110px fixos: com rótulos como "Gerente ou
-   Supervisor de Empresa" o corte ficava cedo demais */
-.barlist-row { display: grid; grid-template-columns: minmax(80px, 1.3fr) 1fr auto; align-items: center; gap: 10px; font-size: 12px; }
-.barlist-name { color: var(--ink-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A largura da coluna de nome vem do componente (--barlist-nome), medida pelo
+   rótulo mais longo da lista — ver BarList em components/charts.tsx. Antes era
+   1.3fr, uma fração da linha: num painel que ocupa a tela inteira, "SP" ficava
+   sozinho num vão de centenas de pixels e a barra começava no meio do card. */
+.barlist-row {
+  display: grid; grid-template-columns: var(--barlist-nome, 210px) minmax(0, 1fr) auto;
+  align-items: center; gap: 12px; font-size: 12px;
+}
+/* o rótulo é o que se procura ao varrer a lista: fica mais legível que o valor,
+   que só é lido depois de achar a linha */
+.barlist-name { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .barlist-track { position: relative; height: 8px; border-radius: 4px; background: var(--line-soft); overflow: hidden; }
 .barlist-fill { display: block; height: 100%; border-radius: 4px; background: var(--accent); }
-.barlist-val { font-family: var(--mono); color: var(--ink-mute); font-size: 11.5px; white-space: nowrap; }
+/* alinhado à direita e com largura mínima: com "5.491 · 63%" e "333 · 4%" na
+   mesma coluna, o texto solto fazia cada linha terminar num ponto diferente */
+.barlist-val {
+  font-family: var(--mono); color: var(--ink-mute); font-size: 11.5px;
+  white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums;
+}
 .barlist-row-clickable {
   width: 100%; background: none; border: 1px solid transparent; border-radius: 6px;
   padding: 4px 6px; margin: -4px -6px; cursor: pointer; text-align: left; font: inherit;
@@ -657,26 +740,6 @@ body {
 
 .table-wrap { border: 1px solid var(--line); border-radius: 13px; background: var(--panel); overflow: hidden; position: relative; }
 
-/* Aviso enquanto a lista completa é montada. Cobre a tabela em vez de ficar só
-   no botão: o que a pessoa olha é a tabela, e é ela que parece travada. */
-.tabela-loading {
-  position: absolute; inset: 0; z-index: 3;
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
-  background: color-mix(in srgb, var(--panel) 86%, transparent);
-  backdrop-filter: blur(2px); text-align: center; padding: 20px;
-}
-.tabela-loading strong { font-size: 13px; color: var(--ink); }
-.tabela-loading span:not(.tabela-loading-spinner) { font-size: 11.5px; color: var(--ink-mute); font-family: var(--mono); }
-.tabela-loading-spinner {
-  width: 22px; height: 22px; border-radius: 50%;
-  border: 2px solid var(--line); border-top-color: var(--accent);
-  animation: girar .7s linear infinite;
-}
-@keyframes girar { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .tabela-loading-spinner { animation-duration: 2.4s; } }
-/* enquanto monta, a tabela não aceita clique: evita disparar outro recálculo
-   por cima do que já está acontecendo */
-.table-wrap-carregando .table-scroll { pointer-events: none; }
 /* altura limitada para o cabeçalho sticky ter contra o que grudar: rolando
    uma lista longa, os nomes das colunas continuam à vista */
 .table-scroll { overflow: auto; overscroll-behavior-x: contain; max-height: 70vh; }
@@ -927,12 +990,6 @@ td.num, th.num { text-align: right; }
 .filtro-chip:hover .filtro-chip-x { background: var(--danger); color: #fff; }
 .filtros-limpar { margin-left: auto; }
 
-/* "Mostrar mais" no lugar dos botões ‹ ›: um alvo grande e escrito, em vez de
-   duas setinhas e um contador de páginas para decorar. */
-.btn-mostrar-mais { padding: 9px 16px; font-size: 12.5px; font-weight: 700; }
-/* volta a lista ao tamanho inicial — "mostrar mais" sem caminho de volta deixa
-   a pessoa presa com milhares de linhas na tela */
-.btn-mostrar-menos { padding: 9px 16px; font-size: 12.5px; }
 /* desfazer dentro do painel que aplicou o filtro */
 .btn-ver-tudo { padding: 6px 12px; font-size: 11.5px; white-space: nowrap; }
 
@@ -1235,9 +1292,9 @@ input.field[type="date"] { font-family: var(--mono); width: 140px; cursor: text;
 }
 
 /* Legenda do donut clicável: sinaliza que dá para filtrar por ali. */
-.donut-legend-clicavel { border-radius: 6px; padding: 2px 4px !important; transition: background .12s; }
-.donut-legend-clicavel:hover { background: var(--panel-2); }
-.donut-legend-clicavel.on .status-left { color: var(--ink); font-weight: 700; }
+.donut-legend-clicavel { transition: background .12s; }
+.donut-legend-clicavel:hover td { background: var(--panel-2); }
+.donut-legend-clicavel.on .donut-legend-nome { color: var(--ink); font-weight: 700; }
 
 /* Campos do import em blocos por assunto: com quase 20 colunas numa grade só,
    achar "onde está o estande" virava caça ao tesouro. */

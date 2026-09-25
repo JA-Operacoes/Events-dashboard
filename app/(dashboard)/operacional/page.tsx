@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useDeferredValue, useTransition, useRef } from "react";
+import { useEffect, useMemo, useState, useDeferredValue, useRef } from "react";
 import { useEvent } from "@/lib/eventContext";
 import { useI18n } from "@/lib/i18n";
 import { useAuth } from "@/lib/auth";
@@ -12,7 +12,7 @@ import {
   type ServicoStatus,
   type ExpositorBase,
 } from "@/lib/dataSource";
-import { ConnChip, Empty, EmptyTableRow, KpiRow, int, money, pct } from "@/components/ui";
+import { ConnChip, Empty, EmptyTableRow, KpiRow, KpiValor, TiltShell, int, money, pct } from "@/components/ui";
 import { SpreadsheetImportOperacional, SpreadsheetImportExpositores } from "@/components/SpreadsheetImport";
 import {
   aggregateOperacional,
@@ -190,15 +190,9 @@ export default function OperacionalPage() {
   // específico — na visão geral (sem busca) fica sem essa soma na tela.
   const visibleTotal = useMemo(() => visiblePedidos.reduce((s, p) => s + p.quantidade, 0), [visiblePedidos]);
 
-  // A tabela cresce por "mostrar mais" em vez de páginas numeradas: com
-  // milhares de linhas, "página 7 de 48" não diz nada a quem só quer achar um
-  // expositor — e obriga a decorar em que página estava.
-  const LINHAS_POR_VEZ = 50;
-  const [linhasVisiveis, setLinhasVisiveis] = useState(LINHAS_POR_VEZ);
-  // Abrir a lista inteira monta milhares de linhas de uma vez. Em transição, o
-  // React continua respondendo a cliques enquanto monta, em vez de congelar a
-  // aba até terminar.
-  const [montandoLinhas, iniciarMontagem] = useTransition();
+  // A tabela abre com o resultado inteiro, sem paginar. Quem rolava de 50 em 50
+  // para conferir a lista toda perdia tempo, e o custo que justificava a página
+  // não existe mais: a virtualização abaixo mantém no DOM só as linhas visíveis.
 
   const [sortKey, setSortKey] = useState<keyof PedidoServico | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
@@ -306,28 +300,21 @@ export default function OperacionalPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
 
-  // filtro novo devolve lista nova: continuar com a lista esticada do filtro
-  // anterior faria a tela abrir no meio do resultado
+  // filtro novo devolve lista nova: a rolagem antiga não corresponde a nada nela,
+  // e a tabela abriria no meio do resultado
   const assinaturaFiltros = `${tableSearchAplicada}|${tableStatus}|${tableTurno}|${tableRange.de}|${tableRange.ate}|${buscaAplicada}|${statusFilter}|${servico}|${tipoFilter}|${equipamentoFiltro}`;
-  const [filtrosAnteriores, setFiltrosAnteriores] = useState(assinaturaFiltros);
-  if (filtrosAnteriores !== assinaturaFiltros) {
-    setFiltrosAnteriores(assinaturaFiltros);
-    setLinhasVisiveis(LINHAS_POR_VEZ);
-  }
-  const linhasDaPagina = useMemo(
-    () => sortedPedidos.slice(0, linhasVisiveis),
-    [sortedPedidos, linhasVisiveis]
-  );
-  const faltamLinhas = Math.max(0, visiblePedidos.length - linhasDaPagina.length);
-
 
 
   // Tabela virtualizada: só as linhas visíveis existem no DOM. Sem isso, abrir
   // a lista inteira monta dezenas de milhares de células e a rolagem trava
   // mesmo depois de montada.
   const areaTabela = useRef<HTMLDivElement>(null);
-  const janela = useJanelaVirtual(areaTabela, linhasDaPagina.length, ALTURA_LINHA_TABELA);
-  const linhasNaTela = linhasDaPagina.slice(janela.inicio, janela.fim);
+  const janela = useJanelaVirtual(areaTabela, sortedPedidos.length, ALTURA_LINHA_TABELA);
+  const linhasNaTela = sortedPedidos.slice(janela.inicio, janela.fim);
+
+  useEffect(() => {
+    areaTabela.current?.scrollTo({ top: 0 });
+  }, [assinaturaFiltros]);
   const colunasTabela = COLUMNS.length;
 
   const importedFiles = Array.from(
@@ -456,15 +443,6 @@ export default function OperacionalPage() {
       label: t("operacional.kpi.servicosPorExpositor"),
       fmt: (v: number | null) => (v == null ? "—" : v.toLocaleString("pt-BR", { maximumFractionDigits: 1 })),
     },
-    ...(data?.kpis.kvaTotal != null
-      ? [
-          {
-            key: "kvaTotal" as const,
-            label: "Potência Geral contratada",
-            fmt: (v: number | null) => (v == null ? "—" : `${v.toLocaleString("pt-BR")} kVA`),
-          },
-        ]
-      : []),
   ];
 
   const STATUS_LABEL: Record<string, string> = {
@@ -544,8 +522,22 @@ export default function OperacionalPage() {
   const qtdFmt = (v: number) => v.toLocaleString("pt-BR");
   // kVA e área saem fracionados (0,11 × m²) — duas casas, sem zeros à toa
   const kvaFmt = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: 2 });
-  // quantos estandes de fato passaram da franquia — é o que a equipe cobra
-  const estandesComExcedente = (data?.energia?.linhas ?? []).filter((l) => (l.kvaExtra ?? 0) > 0).length;
+  // formato dos cartões: aceita nulo, como os demais indicadores
+  const kvaComUnidade = (v: number | null) => (v == null ? "—" : `${kvaFmt(v)} kVA`);
+
+  /**
+   * Totais de energia para o cartão: a soma das franquias (0,11 kVA/m² por
+   * estande, já arredondadas) e a soma do que foi contratado de adicional.
+   * Estande sem área não entra na franquia — não dá para calculá-la.
+   */
+  const totaisKva = useMemo(() => {
+    const linhas = data?.energia?.linhas;
+    if (!linhas?.length) return null;
+    return {
+      incluso: linhas.reduce((s, l) => s + (l.kvaIncluso ?? 0), 0),
+      adicional: linhas.reduce((s, l) => s + l.kvaAdicional, 0),
+    };
+  }, [data?.energia]);
 
   /**
    * Exporta a lista como ela está: mesmos filtros, mesma ordenação e as mesmas
@@ -743,7 +735,33 @@ export default function OperacionalPage() {
         </div>
       </div>
 
-      <KpiRow defs={KPI_DEFS} values={data?.kpis} />
+      <KpiRow defs={KPI_DEFS} values={data?.kpis}>
+        {/* Um cartão só: o número que interessa é a potência total do evento, e
+            as duas parcelas que o formam (o que o contrato já dá e o que foi
+            contratado à parte) ficam logo abaixo, no lugar do rodapé padrão. */}
+        {totaisKva && (
+          <TiltShell>
+            <div className="tilt-inner">
+              <div className="kpi-top">
+                <span className="kpi-label">Potência total do evento</span>
+              </div>
+              <div className="kpi-value">
+                <KpiValor value={totaisKva.incluso + totaisKva.adicional} fmt={kvaComUnidade} />
+              </div>
+              <div className="kpi-parcelas">
+                <span>
+                  <em>em contrato</em>
+                  <KpiValor value={totaisKva.incluso} fmt={kvaComUnidade} />
+                </span>
+                <span>
+                  <em>extra contratado</em>
+                  <KpiValor value={totaisKva.adicional} fmt={kvaComUnidade} />
+                </span>
+              </div>
+            </div>
+          </TiltShell>
+        )}
+      </KpiRow>
 
       <div className="panels">
         <div className="panel">
@@ -752,14 +770,27 @@ export default function OperacionalPage() {
               <h3>{t("operacional.ranking.title")}</h3>
               <p>{t("operacional.ranking.desc")}</p>
             </div>
-            {(data?.topExpositores.length ?? 0) > RANKING_VISIVEL && (
-              <button className="field field-btn" type="button" onClick={() => {
-                  setVerTodosExpositores((v) => !v);
-                  setBuscaRanking("");
-                }}>
-                {verTodosExpositores ? "Ver menos" : `Ver todos (${data!.topExpositores.length})`}
-              </button>
-            )}
+            <div className="panel-head-tools">
+              {/* clicar num expositor recorta a tela inteira; o desfazer fica
+                  no mesmo card, como nos outros painéis clicáveis */}
+              {search.trim() !== "" && (
+                <button className="btn primary btn-ver-tudo" type="button" onClick={() => setSearch("")}>
+                  ↩ Ver todos os expositores
+                </button>
+              )}
+              {(data?.topExpositores.length ?? 0) > RANKING_VISIVEL && (
+                <button
+                  className="field field-btn"
+                  type="button"
+                  onClick={() => {
+                    setVerTodosExpositores((v) => !v);
+                    setBuscaRanking("");
+                  }}
+                >
+                  {verTodosExpositores ? "Ver menos" : `Ver todos (${data!.topExpositores.length})`}
+                </button>
+              )}
+            </div>
           </div>
           {!data?.topExpositores.length ? (
             <Empty glyph="▤" title={t("operacional.ranking.empty.title")} desc={t("operacional.ranking.empty.desc")} />
@@ -825,6 +856,7 @@ export default function OperacionalPage() {
               data={data.servicos}
               valueFmt={qtdFmt}
               variant={donutVariant}
+              legenda={{ nome: "Serviço", valor: "Qtd" }}
               colorFor={corDoServico}
               selected={servico === "all" ? undefined : servico}
               onSelect={(nome) => setServico((atual) => (atual === nome ? "all" : nome))}
@@ -908,72 +940,97 @@ export default function OperacionalPage() {
               <div>
                 <h3>Energia elétrica por estande</h3>
                 <p>
-                  contrato inclui {data.energia.kvaPorM2.toLocaleString("pt-BR", { minimumFractionDigits: 2 })} kVA/m² ·
-                  excedente arredondado para cima · kVA extra a {money(data.energia.valorPorKva)}
+                  franquia de {data.energia.kvaPorM2.toLocaleString("pt-BR", { minimumFractionDigits: 2 })} kVA/m²
+                  (arredondada para cima) + o que cada estande contratou de adicional, a{" "}
+                  {money(data.energia.valorPorKva)} por kVA
                 </p>
-              </div>
-              {/* O total de "incluso" saiu daqui de propósito: ele soma a franquia
-                  de todos os estandes da lista, inclusive os que não pediram
-                  energia, então podia aparecer maior que o contratado e parecer
-                  contradição. A franquia continua na tabela, ao lado do estande
-                  a que pertence, que é onde ela significa alguma coisa. */}
-              <div className="energia-resumo">
-                <span>
-                  <em>kVA contratado</em>
-                  <strong>{kvaFmt(data.energia.totalContratado)} kVA</strong>
-                </span>
-                <span>
-                  <em>estandes com excedente</em>
-                  <strong>
-                    {estandesComExcedente.toLocaleString("pt-BR")} de{" "}
-                    {data.energia.linhas.length.toLocaleString("pt-BR")}
-                  </strong>
-                </span>
-                <span>
-                  <em>extra a cobrar</em>
-                  <strong>{kvaFmt(data.energia.totalExtra)} kVA</strong>
-                </span>
-                <span className="energia-resumo-valor">
-                  <em>valor do excedente</em>
-                  <strong>{money(data.energia.valorTotalExtra)}</strong>
-                </span>
               </div>
             </div>
 
             {data.energia.semArea > 0 && (
               <p className="ranking-vazio">
-                {data.energia.semArea.toLocaleString("pt-BR")} estande(s) sem área informada ficaram fora do cálculo —
-                mapeie a coluna de área no import para incluí-los.
+                {data.energia.semArea.toLocaleString("pt-BR")} estande(s) sem área informada — dá para ver o adicional
+                contratado, mas não a franquia nem o total. Mapeie a coluna de área no import para completar.
               </p>
             )}
 
             {/* a lista rola dentro do card: numa elétrica geral são centenas de
-                estandes, e o interesse está nos primeiros (maior excedente) */}
-            <div className="ranking-lista barlist-scroll scroll-slim">
+                estandes, e o interesse está nos primeiros (maior adicional).
+                Classe própria em vez da do ranking: lá a altura vem do card
+                (height: 0 + flex), e aqui isso zerava a tabela. */}
+            <div className="energia-lista scroll-slim">
               <table className="tabela-simples">
+                {/* larguras declaradas aqui: o nome do expositor fica com a
+                    sobra e os números não se espalham pela linha */}
+                <colgroup>
+                  <col className="col-estande" />
+                  <col />
+                  <col className="col-num" />
+                  <col className="col-num" />
+                  <col className="col-num" />
+                  <col className="col-num" />
+                  <col className="col-valor" />
+                </colgroup>
                 <thead>
                   <tr>
+                    {/* a unidade vai numa linha própria (.th-uni) em vez de entre
+                        parênteses: "Incluso (0,11/m²)" não cabia na coluna e quebrava
+                        no meio, deixando cada cabeçalho numa altura diferente */}
                     <th>Estande</th>
                     <th>Expositor</th>
-                    <th className="num">Área (m²)</th>
-                    <th className="num">Contratado</th>
-                    <th className="num">Incluso</th>
-                    <th className="num">Extra</th>
-                    <th className="num">Valor</th>
+                    <th className="num">
+                      Área
+                      <span className="th-uni">m²</span>
+                    </th>
+                    <th className="num">
+                      Incluso
+                      <span className="th-uni">kVA</span>
+                    </th>
+                    <th className="num">
+                      Adicional
+                      <span className="th-uni">kVA</span>
+                    </th>
+                    <th className="num">
+                      Total
+                      <span className="th-uni">kVA</span>
+                    </th>
+                    <th className="num">
+                      Valor
+                      <span className="th-uni">do adicional</span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
                   {data.energia.linhas.map((l) => (
-                    <tr key={`${l.estande}-${l.expositor}`} className={l.kvaExtra ? "" : "linha-apagada"}>
+                    // sem adicional contratado, o estande fica em cinza: está
+                    // ali para conferência, não tem nada a cobrar
+                    <tr key={`${l.estande}-${l.expositor}`} className={l.kvaAdicional ? "" : "linha-apagada"}>
                       <td>{l.estande}</td>
                       <td className="td-nome">
                         <span className="td-nome-texto">{l.expositor}</span>
                       </td>
-                      <td className="num">{l.area != null ? kvaFmt(l.area) : "—"}</td>
-                      <td className="num">{kvaFmt(l.kvaContratado)}</td>
+                      <td className="num">
+                        {l.area != null ? kvaFmt(l.area) : "—"}
+                        {/* o relatório trouxe áreas diferentes para o mesmo
+                            estande: usamos a maior e avisamos, em vez de
+                            escolher em silêncio */}
+                        {l.areasDivergentes && (
+                          <span
+                            className="aviso-area"
+                            title={`Áreas divergentes no relatório: ${l.areasDivergentes
+                              .map((a) => kvaFmt(a))
+                              .join(" e ")} m². O cálculo usa a maior.`}
+                          >
+                            !
+                          </span>
+                        )}
+                      </td>
                       <td className="num">{l.kvaIncluso != null ? kvaFmt(l.kvaIncluso) : "—"}</td>
-                      <td className="num">{l.kvaExtra != null ? l.kvaExtra.toLocaleString("pt-BR") : "—"}</td>
-                      <td className="num">{l.valorExtra ? money(l.valorExtra) : "—"}</td>
+                      <td className="num">{kvaFmt(l.kvaAdicional)}</td>
+                      <td className="num">
+                        <strong>{l.kvaTotal != null ? kvaFmt(l.kvaTotal) : "—"}</strong>
+                      </td>
+                      <td className="num">{l.valorAdicional ? money(l.valorAdicional) : "—"}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1050,16 +1107,7 @@ export default function OperacionalPage() {
         </div>
       </div>
 
-      <div className={`table-wrap ${montandoLinhas ? "table-wrap-carregando" : ""}`}>
-        {/* Montar milhares de linhas leva alguns segundos e, sem aviso, a tela
-            parece travada — é o tipo de coisa que vira "o sistema deu problema". */}
-        {montandoLinhas && (
-          <div className="tabela-loading" role="status" aria-live="polite">
-            <span className="tabela-loading-spinner" aria-hidden="true" />
-            <strong>Carregando serviços…</strong>
-            <span>montando a lista completa — pode levar alguns segundos</span>
-          </div>
-        )}
+      <div className="table-wrap">
         <div className="panel-head" style={{ padding: "16px 16px 0" }}>
           <div>
             <h3>{t("operacional.table.title")}</h3>
@@ -1232,10 +1280,6 @@ export default function OperacionalPage() {
           <span>
             {!visiblePedidos.length
               ? t("operacional.table.countZero")
-              : faltamLinhas > 0
-              ? `Mostrando ${linhasDaPagina.length.toLocaleString("pt-BR")} de ${visiblePedidos.length.toLocaleString(
-                  "pt-BR"
-                )} ${t("operacional.table.count")}`
               : `${visiblePedidos.length.toLocaleString("pt-BR")} ${t("operacional.table.count")}`}
           </span>
           <span className="pager">
@@ -1243,41 +1287,6 @@ export default function OperacionalPage() {
               <span style={{ fontWeight: 700, color: "var(--ink)" }}>
                 Total: {visibleTotal.toLocaleString("pt-BR")} item(ns)
               </span>
-            )}
-            {linhasVisiveis > LINHAS_POR_VEZ && (
-              <button
-                className="btn btn-mostrar-menos"
-                type="button"
-                onClick={() => {
-                  setLinhasVisiveis(LINHAS_POR_VEZ);
-                  // sem voltar ao topo, a tela ficaria parada num trecho que
-                  // acabou de sumir da lista
-                  document.querySelector(".table-scroll")?.scrollTo({ top: 0 });
-                }}
-              >
-                ↑ Mostrar menos
-              </button>
-            )}
-            {faltamLinhas > 0 && (
-              <>
-                <button
-                  className="btn primary btn-mostrar-mais"
-                  type="button"
-                  onClick={() => iniciarMontagem(() => setLinhasVisiveis((n) => n + LINHAS_POR_VEZ))}
-                >
-                  Mostrar mais {Math.min(LINHAS_POR_VEZ, faltamLinhas)} ({faltamLinhas.toLocaleString("pt-BR")} restantes)
-                </button>
-                {/* de 50 em 50 é lento quando a pessoa quer conferir a lista
-                    inteira ou rolar até o fim */}
-                <button
-                  className="btn btn-mostrar-menos"
-                  type="button"
-                  onClick={() => iniciarMontagem(() => setLinhasVisiveis(visiblePedidos.length))}
-                  disabled={montandoLinhas}
-                >
-                  {montandoLinhas ? "Montando a lista…" : `Ver todos (${visiblePedidos.length.toLocaleString("pt-BR")})`}
-                </button>
-              </>
             )}
           </span>
         </div>

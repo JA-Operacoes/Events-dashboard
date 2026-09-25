@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, useDeferredValue, useTransition, useRef } from "react";
+import { useCallback, useEffect, useMemo, useState, useDeferredValue, useRef } from "react";
 import { useEvent } from "@/lib/eventContext";
 import { useI18n } from "@/lib/i18n";
 import { useAuth } from "@/lib/auth";
@@ -14,7 +14,7 @@ import {
 } from "@/lib/dataSource";
 import { ConnChip, Empty, EmptyTableRow, KpiRow, money, int, pct } from "@/components/ui";
 import { SpreadsheetImportFinanceiro } from "@/components/SpreadsheetImport";
-import { aggregateFinanceiro, mergeImportedInvoices, classificarOrigem } from "@/lib/spreadsheetImport";
+import { aggregateFinanceiro, mergeImportedInvoices, classificarOrigem, contaEfetiva } from "@/lib/spreadsheetImport";
 import { Donut, BarList, StatusBars, LineChart, PALETTE } from "@/components/charts";
 import { getCached, setCached } from "@/lib/pageCache";
 import { useJanelaVirtual, ALTURA_LINHA_TABELA } from "@/lib/virtual";
@@ -88,13 +88,13 @@ export default function FinanceiroPage() {
 
   // só existem quando a planilha importada mapeou alguma coluna de conta —
   // por isso o filtro de conta só aparece na tela quando essa lista não é vazia.
+  // A lista sai de contaEfetiva, a mesma regra do gráfico: as contas agregadoras ficam de
+  // fora porque escolher uma delas não recortaria nada — ela cobre todas as filhas.
   const contaOptions = useMemo(
     () =>
-      Array.from(
-        new Set(
-          rawInvoices.flatMap((inv) => [inv.centroCusto, inv.conta1, inv.conta2, inv.conta3]).filter((c): c is string => !!c)
-        )
-      ).sort((a, b) => a.localeCompare(b, "pt-BR")),
+      Array.from(new Set(rawInvoices.map(contaEfetiva).filter((c): c is string => !!c))).sort((a, b) =>
+        a.localeCompare(b, "pt-BR")
+      ),
     [rawInvoices]
   );
 
@@ -108,14 +108,7 @@ export default function FinanceiroPage() {
           return false;
         if (method !== "all" && normalizePaymentMethod(inv.forma) !== method) return false;
         if (formaDonut !== "all" && inv.forma !== formaDonut) return false;
-        if (
-          contaFilter !== "all" &&
-          inv.centroCusto !== contaFilter &&
-          inv.conta1 !== contaFilter &&
-          inv.conta2 !== contaFilter &&
-          inv.conta3 !== contaFilter
-        )
-          return false;
+        if (contaFilter !== "all" && contaEfetiva(inv) !== contaFilter) return false;
         // o recorte de período usa a data de pagamento: é a única data de fato
       // comparável depois que o vencimento saiu do painel
       if (!matchesPeriod(inv.pagamento, period, customRange)) return false;
@@ -213,18 +206,9 @@ export default function FinanceiroPage() {
   // específico — na visão geral (sem busca) fica sem essa soma na tela.
   const visibleTotal = useMemo(() => visibleInvoices.reduce((s, inv) => s + inv.valor, 0), [visibleInvoices]);
 
-  // A tabela mostra uma página por vez: renderizar 10 mil linhas de uma vez
-  // enche o DOM de células e deixa toda a página lenta, mesmo com os dados já
-  // carregados. Os KPIs e gráficos continuam somando a lista inteira.
-  // Cresce por "mostrar mais" em vez de páginas numeradas: com milhares de
-  // duplicatas, "página 7 de 48" não ajuda quem só quer achar um cliente — e
-  // ainda obriga a lembrar em que página estava.
-  const LINHAS_POR_VEZ = 50;
-  const [linhasVisiveis, setLinhasVisiveis] = useState(LINHAS_POR_VEZ);
-  // Abrir a lista inteira monta milhares de linhas de uma vez. Em transição, o
-  // React continua respondendo a cliques enquanto monta, em vez de congelar a
-  // aba até terminar.
-  const [montandoLinhas, iniciarMontagem] = useTransition();
+  // A tabela abre com o resultado inteiro, sem paginar. Quem rolava de 50 em 50
+  // para conferir a lista toda perdia tempo, e o custo que justificava a página
+  // não existe mais: a virtualização abaixo mantém no DOM só as linhas visíveis.
 
   const [sortKey, setSortKey] = useState<keyof Invoice | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
@@ -266,22 +250,9 @@ export default function FinanceiroPage() {
     });
   }, [visibleInvoices, sortKey, sortDir]);
 
-  // Filtro novo devolve uma lista nova: continuar na página anterior mostraria
-  // o meio do resultado e passava a impressão de que a busca não encontrou nada.
+  // Filtro novo devolve uma lista nova: a rolagem antiga não corresponde a nada
+  // nela, e a tabela abriria no meio do resultado.
   const assinaturaFiltros = `${tableSearchAplicada}|${tableStatus}|${tableForma}|${tableRange.de}|${tableRange.ate}|${buscaAplicada}|${statusFilter}|${origem}|${method}|${period}|${contaFilter}|${formaDonut}`;
-  const [filtrosAnteriores, setFiltrosAnteriores] = useState(assinaturaFiltros);
-  if (filtrosAnteriores !== assinaturaFiltros) {
-    // ajuste de estado durante o render, como o React recomenda para estado
-    // derivado: mais direto que um efeito, e sem o render intermediário
-    setFiltrosAnteriores(assinaturaFiltros);
-    setLinhasVisiveis(LINHAS_POR_VEZ);
-  }
-  const linhasDaPagina = useMemo(
-    () => sortedInvoices.slice(0, linhasVisiveis),
-    [sortedInvoices, linhasVisiveis]
-  );
-  const faltamLinhas = Math.max(0, visibleInvoices.length - linhasDaPagina.length);
-
 
 
   /**
@@ -307,8 +278,12 @@ export default function FinanceiroPage() {
   // a lista inteira monta dezenas de milhares de células e a rolagem trava
   // mesmo depois de montada.
   const areaTabela = useRef<HTMLDivElement>(null);
-  const janela = useJanelaVirtual(areaTabela, linhasDaPagina.length, ALTURA_LINHA_TABELA);
-  const linhasNaTela = linhasDaPagina.slice(janela.inicio, janela.fim);
+  const janela = useJanelaVirtual(areaTabela, sortedInvoices.length, ALTURA_LINHA_TABELA);
+  const linhasNaTela = sortedInvoices.slice(janela.inicio, janela.fim);
+
+  useEffect(() => {
+    areaTabela.current?.scrollTo({ top: 0 });
+  }, [assinaturaFiltros]);
   const colunasTabela = COLUNAS_TABELA.length;
 
   /**
@@ -662,6 +637,7 @@ export default function FinanceiroPage() {
             <Donut
               data={data.paymentMethods}
               variant={donutVariant}
+              legenda={{ nome: "Forma de pagamento", valor: "Recebido" }}
               colorFor={corDaForma}
               selected={formaDonut === "all" ? undefined : formaDonut}
               onSelect={(nome) => setFormaDonut((atual) => (atual === nome ? "all" : nome))}
@@ -737,7 +713,7 @@ export default function FinanceiroPage() {
           <div className="panel-head">
             <div>
               <h3>Por conta / centro de custo</h3>
-              <p>quanto passa por cada conta do rateio importado da planilha</p>
+              <p>quanto passa por cada conta analítica do rateio — a soma bate com o total recebido</p>
             </div>
             {/* o desfazer fica onde o filtro foi aplicado: quem clicou numa
                 conta procura a saída no próprio painel */}
@@ -766,16 +742,7 @@ export default function FinanceiroPage() {
         </div>
       )}
 
-      <div className={`table-wrap ${montandoLinhas ? "table-wrap-carregando" : ""}`}>
-        {/* Montar milhares de linhas leva alguns segundos e, sem aviso, a tela
-            parece travada — é o tipo de coisa que vira "o sistema deu problema". */}
-        {montandoLinhas && (
-          <div className="tabela-loading" role="status" aria-live="polite">
-            <span className="tabela-loading-spinner" aria-hidden="true" />
-            <strong>Carregando duplicatas…</strong>
-            <span>montando a lista completa — pode levar alguns segundos</span>
-          </div>
-        )}
+      <div className="table-wrap">
         <div className="panel-head" style={{ padding: "16px 16px 0" }}>
           <div>
             <h3>{t("financeiro.table.title")}</h3>
@@ -951,50 +918,11 @@ export default function FinanceiroPage() {
           <span>
             {!visibleInvoices.length
               ? t("financeiro.table.countZero")
-              : faltamLinhas > 0
-              ? `Mostrando ${linhasDaPagina.length.toLocaleString("pt-BR")} de ${visibleInvoices.length.toLocaleString(
-                  "pt-BR"
-                )} ${t("financeiro.table.count")}`
               : `${visibleInvoices.length.toLocaleString("pt-BR")} ${t("financeiro.table.count")}`}
           </span>
           <span className="pager">
             {filtrosTabelaAtivos && visibleInvoices.length > 0 && (
               <span style={{ fontWeight: 700, color: "var(--ink)" }}>Total: {money(visibleTotal)}</span>
-            )}
-            {linhasVisiveis > LINHAS_POR_VEZ && (
-              <button
-                className="btn btn-mostrar-menos"
-                type="button"
-                onClick={() => {
-                  setLinhasVisiveis(LINHAS_POR_VEZ);
-                  // sem voltar ao topo, a tela ficaria parada num trecho que
-                  // acabou de sumir da lista
-                  document.querySelector(".table-scroll")?.scrollTo({ top: 0 });
-                }}
-              >
-                ↑ Mostrar menos
-              </button>
-            )}
-            {faltamLinhas > 0 && (
-              <>
-                <button
-                  className="btn primary btn-mostrar-mais"
-                  type="button"
-                  onClick={() => iniciarMontagem(() => setLinhasVisiveis((n) => n + LINHAS_POR_VEZ))}
-                >
-                  Mostrar mais {Math.min(LINHAS_POR_VEZ, faltamLinhas)} ({faltamLinhas.toLocaleString("pt-BR")} restantes)
-                </button>
-                {/* de 50 em 50 é lento quando a pessoa quer conferir a lista
-                    inteira ou rolar até o fim */}
-                <button
-                  className="btn btn-mostrar-menos"
-                  type="button"
-                  onClick={() => iniciarMontagem(() => setLinhasVisiveis(visibleInvoices.length))}
-                  disabled={montandoLinhas}
-                >
-                  {montandoLinhas ? "Montando a lista…" : `Ver todos (${visibleInvoices.length.toLocaleString("pt-BR")})`}
-                </button>
-              </>
             )}
           </span>
         </div>

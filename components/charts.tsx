@@ -45,6 +45,7 @@ export function Donut({
   onSelect,
   selected,
   colorFor,
+  legenda,
 }: {
   data: Array<{ label: string; value: number }>;
   valueFmt?: (v: number) => string;
@@ -55,6 +56,12 @@ export function Donut({
   /** Item filtrado no momento: os demais ficam esmaecidos. */
   selected?: string;
   /**
+   * Cabeçalho da legenda: diz o que é o rótulo e o que é o número ("Serviço" /
+   * "Itens"). Sem isso, quem abre a tela pela primeira vez vê "137" e não sabe
+   * se são pedidos, pessoas ou reais.
+   */
+  legenda?: { nome: string; valor: string };
+  /**
    * Cor fixa por rótulo. Sem isso a cor sai da posição na lista, e filtrar por
    * um serviço fazia a fatia dele trocar de cor — o mesmo dado aparecia de
    * duas cores conforme o filtro.
@@ -63,6 +70,9 @@ export function Donut({
 }) {
   const [hover, setHover] = useState<number | null>(null);
   const total = data.reduce((s, d) => s + d.value, 0);
+  // sempre do maior para o menor: é a ordem em que se lê um gráfico de
+  // participação, e a legenda acompanha as fatias
+  const dados = [...data].sort((a, b) => b.value - a.value);
   if (!total) return null;
 
   const R = 56;
@@ -77,8 +87,8 @@ export function Donut({
     // quanto vem antes de cada fatia, calculado de uma vez: mutar um
     // acumulador dentro do map é o tipo de efeito que o compilador do React
     // não consegue garantir entre renders
-    const antes = data.map((_, i) => data.slice(0, i).reduce((soma, d) => soma + d.value, 0));
-    const arcs = data.map((d, i) => {
+    const antes = dados.map((_, i) => dados.slice(0, i).reduce((soma, d) => soma + d.value, 0));
+    const arcs = dados.map((d, i) => {
       const a0 = 180 - (antes[i] / total) * 180;
       const a1 = 180 - ((antes[i] + d.value) / total) * 180;
       const p0 = polar(cx, cy, R, a0);
@@ -129,38 +139,23 @@ export function Donut({
             {valueFmt(total)}
           </text>
         </svg>
-        <div className="donut-legend">
-          {arcs.map((a) => (
-            <div
-              className={`status-row ${onSelect ? "donut-legend-clicavel" : ""} ${selected === a.label ? "on" : ""}`}
-              style={{
-                border: "none",
-                padding: 0,
-                opacity: hover === null || hover === a.i ? 1 : 0.45,
-                cursor: onSelect ? "pointer" : "default",
-              }}
-              key={a.label}
-              onPointerEnter={() => setHover(a.i)}
-              onPointerLeave={() => setHover(null)}
-              onClick={onSelect ? () => onSelect(a.label) : undefined}
-            >
-              <span className="status-left">
-                <span className="legend-swatch" style={{ background: a.color, height: 8, width: 8, borderRadius: 2 }} />
-                {a.label}
-              </span>
-              <span className="status-val">
-                {valueFmt(a.value)} · {((a.value / total) * 100).toFixed(0)}%
-              </span>
-            </div>
-          ))}
-        </div>
+        <LegendaDonut
+          arcs={arcs}
+          total={total}
+          valueFmt={valueFmt}
+          hover={hover}
+          setHover={setHover}
+          selected={selected}
+          onSelect={onSelect}
+          legenda={legenda}
+        />
       </div>
     );
   }
 
   const C = 2 * Math.PI * R;
-  const antesDe = data.map((_, i) => data.slice(0, i).reduce((soma, d) => soma + d.value, 0));
-  const arcs = data.map((d, i) => {
+  const antesDe = dados.map((_, i) => dados.slice(0, i).reduce((soma, d) => soma + d.value, 0));
+  const arcs = dados.map((d, i) => {
     const len = (d.value / total) * C;
     return {
       ...d,
@@ -200,32 +195,93 @@ export function Donut({
           />
         ))}
       </svg>
-      <div className="donut-legend">
+      <LegendaDonut
+        arcs={arcs}
+        total={total}
+        valueFmt={valueFmt}
+        hover={hover}
+        setHover={setHover}
+        selected={selected}
+        onSelect={onSelect}
+        legenda={legenda}
+      />
+    </div>
+  );
+}
+
+/**
+ * Percentual da fatia. Abaixo de 1% entra uma casa decimal: arredondar para
+ * inteiro mostrava "0%" para quem tem 2 de 600 itens, e 0% tem de significar
+ * nada contratado.
+ */
+function percentualLegivel(valor: number, total: number): string {
+  if (!valor) return "0%";
+  const pct = (valor / total) * 100;
+  if (pct < 1) return `${pct.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`;
+  return `${Math.round(pct)}%`;
+}
+
+/**
+ * Legenda do donut em tabela: rótulo, valor e percentual em colunas próprias.
+ * Como lista de linhas flex, cada item alinhava por conta e os números ficavam
+ * em posições diferentes conforme o tamanho do nome.
+ */
+function LegendaDonut({
+  arcs,
+  total,
+  valueFmt,
+  hover,
+  setHover,
+  selected,
+  onSelect,
+  legenda,
+}: {
+  arcs: Array<{ label: string; value: number; color: string; i: number }>;
+  total: number;
+  valueFmt: (v: number) => string;
+  hover: number | null;
+  setHover: (i: number | null) => void;
+  selected?: string;
+  onSelect?: (label: string) => void;
+  legenda?: { nome: string; valor: string };
+}) {
+  return (
+    <table className="donut-legend">
+      {legenda && (
+        <thead>
+          <tr>
+            <th />
+            <th className="donut-legend-nome">{legenda.nome}</th>
+            <th className="donut-legend-valor">{legenda.valor}</th>
+            <th className="donut-legend-pct">%</th>
+          </tr>
+        </thead>
+      )}
+      <tbody>
         {arcs.map((a) => (
-          <div
-            className={`status-row ${onSelect ? "donut-legend-clicavel" : ""} ${selected === a.label ? "on" : ""}`}
+          <tr
+            key={a.label}
+            className={`${onSelect ? "donut-legend-clicavel" : ""} ${selected === a.label ? "on" : ""}`}
             style={{
-              border: "none",
-              padding: 0,
               opacity: hover === null || hover === a.i ? 1 : 0.45,
               cursor: onSelect ? "pointer" : "default",
             }}
-            key={a.label}
             onPointerEnter={() => setHover(a.i)}
             onPointerLeave={() => setHover(null)}
             onClick={onSelect ? () => onSelect(a.label) : undefined}
           >
-            <span className="status-left">
-              <span className="legend-swatch" style={{ background: a.color, height: 8, width: 8, borderRadius: 2 }} />
+            <td className="donut-legend-cor">
+              <span className="legend-swatch" style={{ background: a.color }} />
+            </td>
+            <td className="donut-legend-nome" title={a.label}>
               {a.label}
-            </span>
-            <span className="status-val">
-              {valueFmt(a.value)} · {((a.value / total) * 100).toFixed(0)}%
-            </span>
-          </div>
+            </td>
+            <td className="donut-legend-valor">{valueFmt(a.value)}</td>
+            <td className="donut-legend-pct">{percentualLegivel(a.value, total)}</td>
+          </tr>
         ))}
-      </div>
-    </div>
+      </tbody>
+    </table>
   );
 }
 
@@ -248,8 +304,24 @@ export function BarList({
 }) {
   const max = Math.max(...data.map((d) => d.value), 1);
   const rowClass = layout === "stacked" ? "barlist-row barlist-row-stacked" : "barlist-row";
+  /**
+   * Largura da coluna de nome, medida pelo maior rótulo da lista.
+   *
+   * Cada linha é um grid independente, então uma largura que se ajusta ao
+   * conteúdo (fit-content) desalinharia as barras entre si — "SP" e "MG" teriam
+   * colunas de tamanhos diferentes. Um valor fixo alinha, mas é ou apertado
+   * demais para "Gerente ou Supervisor de Empresa" ou largo demais para uma
+   * lista de siglas, que foi o que deixava a barra começando no meio do card.
+   *
+   * Medir aqui resolve os dois: a lista inteira usa a mesma largura, e ela é a
+   * do rótulo mais longo. O teto de 30ch mantém o corte com reticências para as
+   * listas de texto livre (cargo, segmento), onde um único nome quilométrico
+   * levaria a coluna junto.
+   */
+  const maiorRotulo = data.reduce((n, d) => Math.max(n, d.name.length), 0);
+  const larguraNome = `${Math.min(30, Math.max(3, maiorRotulo))}ch`;
   return (
-    <div className="barlist">
+    <div className="barlist" style={{ "--barlist-nome": larguraNome } as React.CSSProperties}>
       {data.map((d) => {
         const row = (
           <>

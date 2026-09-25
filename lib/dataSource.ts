@@ -61,6 +61,13 @@ export type Invoice = {
   conta3?: string | null;
   /** Preenchido apenas no modo planilha — identifica qual arquivo importado gerou esta linha. */
   sourceFile?: string;
+  /**
+   * De qual das três planilhas do financeiro a linha veio (ver FINANCEIRO_TIPOS).
+   * É o que permite ter as duas fontes de ingresso carregadas ao mesmo tempo sem
+   * cobrar a mesma venda duas vezes: o dinheiro sai do contas a receber, e do
+   * credenciamento vem só contagem, perfil e presença.
+   */
+  fonte?: string;
 };
 
 export type DadosIngresso = {
@@ -260,20 +267,25 @@ export type ExpositorBase = {
   sourceFile: string;
 };
 
-/** Linha do cálculo de energia de um estande. */
+/** Cálculo de energia de um estande. */
 export type EstandeEnergia = {
   estande: string;
   expositor: string;
-  /** Área em m² usada no cálculo do incluso. */
+  /** Área em m² usada no cálculo da franquia. */
   area: number | null;
-  /** Soma do kVA pedido nas linhas daquele estande. */
-  kvaContratado: number;
-  /** 0,11 kVA/m² — o que o contrato de participação já cobre. */
+  /** Áreas diferentes informadas para o mesmo estande, quando houver. */
+  areasDivergentes: number[] | null;
+  /**
+   * Franquia do contrato de participação: 0,11 kVA/m², já arredondada para a
+   * unidade inteira acima — a energia é fornecida em kVA não fracionado.
+   */
   kvaIncluso: number | null;
-  /** Excedente já arredondado para a unidade inteira acima, como o contrato prevê. */
-  kvaExtra: number | null;
-  /** kvaExtra × valor do kVA extra. */
-  valorExtra: number | null;
+  /** kVA que o expositor contratou por fora, direto no relatório de elétrica. */
+  kvaAdicional: number;
+  /** Franquia + adicional: a potência que o estande tem disponível. */
+  kvaTotal: number | null;
+  /** kvaAdicional × valor do kVA. */
+  valorAdicional: number;
 };
 
 export type EnergiaPorEstande = {
@@ -281,11 +293,7 @@ export type EnergiaPorEstande = {
   /** kVA/m² incluídos no contrato de participação. */
   kvaPorM2: number;
   valorPorKva: number;
-  totalContratado: number;
-  totalIncluso: number;
-  totalExtra: number;
-  valorTotalExtra: number;
-  /** Estandes sem área informada — ficam de fora do cálculo e são avisados na tela. */
+  /** Estandes sem área informada — a franquia deles não dá para calcular. */
   semArea: number;
 };
 
@@ -308,7 +316,10 @@ export type OperacionalData = {
      * contrataram, sem o "de X".
      */
     qtdExpositoresBase: number | null;
-    /** Potência total contratada (kVA). Nulo quando nenhuma linha informa. */
+    /**
+     * Potência total disponível no evento: franquia de contrato de todos os
+     * estandes + adicional contratado. Nulo quando nenhuma planilha traz kVA.
+     */
     kvaTotal: number | null;
   };
   servicos: Array<{ label: string; value: number }>;

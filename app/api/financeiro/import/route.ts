@@ -37,6 +37,7 @@ export async function GET(req: NextRequest) {
       conta2: true,
       conta3: true,
       sourceFile: true,
+      fonte: true,
       createdAt: true,
     },
   });
@@ -63,6 +64,9 @@ export async function GET(req: NextRequest) {
     conta2: r.conta2,
     conta3: r.conta3,
     sourceFile: r.sourceFile,
+    // sem isto o painel soma o mesmo ingresso duas vezes quando o
+    // credenciamento e o contas a receber estão os dois carregados
+    fonte: r.fonte,
   }));
   // exposto via header (não no corpo) pra não quebrar o contrato `Invoice[]`
   // que o resto do app já espera dessa rota.
@@ -115,6 +119,7 @@ export async function POST(req: NextRequest) {
     conta1: inv.conta1 ?? null,
     conta2: inv.conta2 ?? null,
     conta3: inv.conta3 ?? null,
+    fonte: inv.fonte ?? "",
   }));
 
   // Inserção fatiada: cada createMany é uma ida ao banco, então o tamanho é

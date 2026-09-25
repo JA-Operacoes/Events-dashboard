@@ -135,6 +135,10 @@ model ImportedInvoice {
   conta1     String?
   conta2     String?
   conta3     String?
+  /// De qual das três planilhas do financeiro a linha veio (ver FINANCEIRO_TIPOS):
+  /// "expositor", "ingresso-valores" ou "ingresso-quantidade". O credenciamento e o
+  /// contas a receber descrevem a mesma venda — sem isto o painel soma o valor duas vezes.
+  fonte      String   @default("")
   createdAt  DateTime @default(now())
 
   edition Edition @relation(fields: [editionId], references: [id], onDelete: Cascade)

@@ -144,6 +144,26 @@ export const FINANCEIRO_INGRESSO_FIELDS = [
   { key: "pais", label: "País", required: false, grupo: "Perfil do público" },
 ] as const;
 
+/**
+ * Contas a receber de ingresso ("contas_a_receber_sem_rateio"): a mesma venda
+ * vista pelo ERP financeiro, uma linha por duplicata.
+ *
+ * Não tem coluna de status: o relatório é exportado já filtrado (um arquivo de
+ * pagas, um de em aberto, um de canceladas), então quem diz o status é a
+ * escolha feita no import, não a planilha. Também não tem rateio — nenhuma
+ * coluna de conta — nem os campos de perfil e presença, que só existem do lado
+ * do credenciamento.
+ */
+export const FINANCEIRO_INGRESSO_VALORES_FIELDS = [
+  { key: "cliente", label: "Comprador (razão social)", required: true, grupo: "Quem" },
+  { key: "cnpj", label: "CPF / CNPJ", required: false, grupo: "Quem" },
+  { key: "numero", label: "Número da duplicata", required: false, grupo: "Quem" },
+
+  { key: "valor", label: "Valor da duplicata", required: true, grupo: "Cobrança" },
+  { key: "forma", label: "Forma de pagamento", required: false, grupo: "Cobrança" },
+  { key: "pagamento", label: "Data de pagamento", required: false, grupo: "Cobrança" },
+] as const;
+
 export type FinanceiroIngressoFieldKey = (typeof FINANCEIRO_INGRESSO_FIELDS)[number]["key"];
 
 /**
@@ -307,6 +327,32 @@ export function suggestFinanceiroIngressoMapping(headers: string[]): ColumnMappi
 }
 
 /**
+ * Cabeçalhos do contas a receber de ingresso. As armadilhas aqui são colunas
+ * que existem no cabeçalho mas vêm vazias no export: "NOME COMPLETO" e
+ * "DOCUMENTO" não têm uma linha preenchida sequer, e quem identifica o
+ * comprador é "RAZÃO SOCIAL". Por isso razão social vem antes de nome completo,
+ * e CNPJ antes de documento.
+ */
+const FINANCEIRO_INGRESSO_VALORES_KEYWORDS: { key: FinanceiroImportKey; patterns: RegExp[] }[] = [
+  // data antes de forma: "FORMA PAGAMENTO" e "DATA PAGAMENTO" disputam o mesmo
+  // padrão solto de "pagamento"
+  { key: "pagamento", patterns: [/^data pagamento$/, /data.*pagamento/] },
+  { key: "forma", patterns: [/forma.*pag/, /m[eé]todo.*pag/] },
+  // "TOTAL DA DUPLICATA" é o valor da linha; "VALOR TOTAL DOCUMENTO" pode somar
+  // várias duplicatas do mesmo documento
+  { key: "valor", patterns: [/total da duplicata/, /valor total documento/, /^valor$/] },
+  // "DUPLICATA" ("V39139") identifica a cobrança; "ID DUPLICATA" é a chave
+  // interna do ERP e não aparece em lugar nenhum fora dele
+  { key: "numero", patterns: [/^duplicata$/, /n[uú]mero.*documento/, /^n[º°o].*duplicata$/] },
+  { key: "cnpj", patterns: [/^cnpj$/, /^cpf$/, /^documento$/] },
+  { key: "cliente", patterns: [/raz[aã]o social/, /nome fantasia/, /nome completo/] },
+];
+
+export function suggestFinanceiroIngressoValoresMapping(headers: string[]): ColumnMapping<FinanceiroImportKey> {
+  return suggestMapping(headers, FINANCEIRO_INGRESSO_VALORES_KEYWORDS);
+}
+
+/**
  * "São Paulo", "SP" e "sao paulo" são o mesmo estado e apareciam como três
  * barras. Converte para a sigla quando reconhece o nome; o que não for estado
  * brasileiro fica como veio (capitalizado), para não inventar sigla.
@@ -367,13 +413,48 @@ export function suggestFinanceiroStatusMapping(values: string[]): StatusMapping<
  * vazio e o admin é obrigado a escolher — é isso que evita uma planilha inteira
  * cair em "Outras" e sumir do recorte por origem.
  */
-export function sugerirOrigemFinanceiro(fileName: string, table: SheetTable): string {
-  if (suggestFinanceiroMapping(table.headers).origem) return "auto";
+export function sugerirTipoFinanceiro(fileName: string, table: SheetTable): string {
+  // o cabeçalho decide antes do nome do arquivo: os três relatórios saem do ERP
+  // com nomes intercambiáveis ("contas_a_receber_sem_rateio (3).xls") e às vezes
+  // fatiados em arquivo_1/2/3, mas as colunas são inconfundíveis.
+  const cols = table.headers.map(normalize);
+  const tem = (re: RegExp) => cols.some((c) => re.test(c));
+
+  // só o credenciamento tem crachá e comparecimento
+  if (tem(/c[oó]digo crach[aá]/) || tem(/^compareceu$/)) return "ingresso-quantidade";
+  // rateio: as colunas de conta só existem no relatório analítico
+  if (tem(/^conta ?2$/) || tem(/^conta$/) || tem(/centro.*custo/)) return "expositor";
+  // contas a receber sem rateio
+  if (tem(/total da duplicata/) || tem(/^duplicata$/)) return "ingresso-valores";
 
   const n = normalize(fileName);
-  if (/ingresso|inscri|participante|visitante/.test(n)) return "Ingresso";
-  if (/expositor|montador|estande|patrocin/.test(n)) return "Expositor";
+  if (/ingresso|inscri|participante|visitante|crach/.test(n)) return "ingresso-quantidade";
+  if (/rateio/.test(n)) return "expositor";
+  if (/expositor|montador|estande|patrocin/.test(n)) return "expositor";
   return "";
+}
+
+/**
+ * O que a planilha que está sendo importada é. São três porque são três fontes
+ * de verdade diferentes, com cabeçalhos que não se parecem:
+ *
+ * - `expositor`: contas a receber COM rateio — o relatório analítico, com as
+ *   colunas de conta que alimentam o painel de centro de custo.
+ * - `ingresso-valores`: contas a receber SEM rateio — uma linha por duplicata.
+ *   É daqui que sai quanto foi vendido e quanto entrou.
+ * - `ingresso-quantidade`: o relatório do credenciamento — uma linha por
+ *   inscrição, com perfil e comparecimento. É daqui que sai quantas pessoas.
+ *
+ * Valor vem sempre do financeiro; do credenciamento vem só contagem, perfil e
+ * presença. As duas fontes descrevem a mesma venda, e somá-las cobraria o
+ * mesmo ingresso duas vezes.
+ */
+export const FINANCEIRO_TIPOS = ["expositor", "ingresso-valores", "ingresso-quantidade"] as const;
+export type FinanceiroTipoPlanilha = (typeof FINANCEIRO_TIPOS)[number];
+
+/** A origem da receita que cada tipo representa — os dois de ingresso caem no mesmo recorte. */
+export function origemDoTipo(tipo: string): string {
+  return tipo === "expositor" ? "Expositor" : tipo.startsWith("ingresso") ? "Ingresso" : "";
 }
 
 export function classificarOrigem(origem: string | null | undefined): OrigemReceita | null {
@@ -401,8 +482,15 @@ export function mapRowsToInvoices(
   mapping: ColumnMapping<FinanceiroImportKey>,
   statusMapping: StatusMapping<InvoiceStatus>,
   sourceFile: string,
-  /** Origem escolhida no import: "auto" deixa a coluna da planilha decidir. */
-  origemEscolhida?: string
+  /** Tipo de planilha escolhido no import (ver FINANCEIRO_TIPOS). */
+  tipoEscolhido?: string,
+  /**
+   * Status que vale para o arquivo inteiro. O contas a receber de ingresso é
+   * exportado já filtrado por situação e não traz coluna de status — quem
+   * informa é o import. Só é usado quando não há coluna de status mapeada: com
+   * a coluna presente, é ela que manda, linha a linha.
+   */
+  statusFixo?: InvoiceStatus
 ): Invoice[] {
   const idx = (key: FinanceiroImportKey) => {
     const col = mapping[key];
@@ -443,8 +531,11 @@ export function mapRowsToInvoices(
     iPais,
   ].some((i) => i >= 0);
 
-  const escolha = (origemEscolhida ?? "").trim();
-  const forcarOrigem = !escolha || escolha === "auto" ? "" : escolha;
+  const escolha = (tipoEscolhido ?? "").trim();
+  const forcarOrigem = origemDoTipo(escolha);
+  // sem coluna de status, o arquivo inteiro recebe o que foi escolhido no
+  // import; sem escolha também, sobra "pendente" — o padrão de sempre.
+  const statusSemColuna: InvoiceStatus = statusFixo ?? "pendente";
   const iConta1 = idx("conta1");
   const iConta2 = idx("conta2");
   const iConta3 = idx("conta3");
@@ -469,7 +560,7 @@ export function mapRowsToInvoices(
       pagamento: iPag >= 0 && r[iPag] ? r[iPag] : null,
       forma: iForma >= 0 ? r[iForma] : "",
       valor: iValor >= 0 ? parseValor(r[iValor]) : 0,
-      status: statusMapping[rawStatus] ?? "pendente",
+      status: iStatus >= 0 ? statusMapping[rawStatus] ?? "pendente" : statusSemColuna,
       // a escolha do import vale para o arquivo inteiro; "auto" devolve a
       // decisão para a coluna, que pode variar linha a linha.
       quantidade: iQuantidade >= 0 && r[iQuantidade] ? parseInt(r[iQuantidade].replace(/[^\d-]/g, ""), 10) || null : null,
@@ -496,6 +587,7 @@ export function mapRowsToInvoices(
       conta2: iConta2 >= 0 && r[iConta2] ? r[iConta2] : null,
       conta3: iConta3 >= 0 && r[iConta3] ? r[iConta3] : null,
       sourceFile,
+      fonte: escolha || undefined,
     };
   });
 }
@@ -510,16 +602,44 @@ export function mergeImportedInvoices(existing: Invoice[], incoming: Invoice[], 
   return [...existing.filter((inv) => inv.sourceFile !== sourceFile), ...incoming];
 }
 
+/**
+ * A conta que representa a duplicata no painel de rateio.
+ *
+ * O relatório analítico de rateio traz as colunas Conta / Conta 2 / Conta 3 como níveis de
+ * uma hierarquia contábil — "Conta" é a analítica (ENERGIA ELÉTRICA - 1.0) e as seguintes são
+ * as agregadoras acima dela (EVENTO - FORM EXPOSITOR/MONTADOR - 2.5). Elas não são um rateio
+ * entre contas: o valor da linha pertence inteiro à analítica, e a agregadora só o reagrupa.
+ *
+ * Por isso ficamos com a mais específica disponível. Centro de custo é outra dimensão e entra
+ * apenas como último recurso, quando a planilha não mapeou nenhuma coluna de conta.
+ */
+export function contaEfetiva(inv: Invoice): string | null {
+  return inv.conta1 || inv.conta2 || inv.conta3 || inv.centroCusto || null;
+}
+
 export function aggregateFinanceiro(invoices: Invoice[]): FinanceiroData {
-  const pagos = invoices.filter((i) => i.status === "pago");
+  /**
+   * O credenciamento e o contas a receber descrevem a mesma venda: o relatório
+   * de credenciamento traz "Total pago" por inscrição e o financeiro traz a
+   * duplicata correspondente. Com os dois importados, somar tudo cobraria cada
+   * ingresso duas vezes — então o dinheiro sai do financeiro e o credenciamento
+   * entra só com contagem, perfil e presença.
+   *
+   * Quando o financeiro ainda não foi importado, o credenciamento vale pelos
+   * dois: é melhor mostrar o valor que ele conhece do que uma tela zerada.
+   */
+  const temFinanceiro = invoices.some((i) => i.fonte === "ingresso-valores" || i.fonte === "expositor");
+  const comValor = temFinanceiro ? invoices.filter((i) => i.fonte !== "ingresso-quantidade") : invoices;
+
+  const pagos = comValor.filter((i) => i.status === "pago");
   const totalRecebido = pagos.reduce((s, i) => s + i.valor, 0);
   const ticketMedio = pagos.length ? totalRecebido / pagos.length : 0;
 
   const methodTotals = new Map<string, number>();
-  for (const inv of invoices) methodTotals.set(inv.forma, (methodTotals.get(inv.forma) ?? 0) + inv.valor);
+  for (const inv of comValor) methodTotals.set(inv.forma, (methodTotals.get(inv.forma) ?? 0) + inv.valor);
 
   const clientTotals = new Map<string, number>();
-  for (const inv of invoices) clientTotals.set(inv.cliente, (clientTotals.get(inv.cliente) ?? 0) + inv.valor);
+  for (const inv of comValor) clientTotals.set(inv.cliente, (clientTotals.get(inv.cliente) ?? 0) + inv.valor);
 
   const statusTotals = new Map<InvoiceStatus, number>();
   for (const inv of invoices) statusTotals.set(inv.status, (statusTotals.get(inv.status) ?? 0) + 1);
@@ -527,27 +647,27 @@ export function aggregateFinanceiro(invoices: Invoice[]): FinanceiroData {
   // só faz sentido quando a planilha traz a coluna de origem — sem ela toda
   // linha cairia em "outras" e o painel diria uma coisa que não é verdade.
   const origemTotals = new Map<OrigemReceita, number>();
-  for (const inv of invoices) {
+  for (const inv of comValor) {
     const tipo = inv.origemTipo ?? classificarOrigem(inv.origem);
     if (!tipo) continue;
     origemTotals.set(tipo, (origemTotals.get(tipo) ?? 0) + inv.valor);
   }
 
   // opcional — só populado quando a planilha traz colunas de rateio (Conta/Conta 2/Conta 3).
-  // uma duplicata pode aparecer em mais de uma conta ao mesmo tempo (rateio entre centros de
-  // custo), então o valor dela entra na soma de cada conta que ela referencia.
+  // Cada duplicata soma numa conta só: a mais específica que ela tem (ver contaEfetiva).
+  // Somar em todas dobrava o total, porque as colunas são níveis de uma hierarquia e não
+  // centros de custo paralelos — a agregadora repetia, sozinha, o valor de todas as filhas.
   const contaTotals = new Map<string, number>();
-  for (const inv of invoices) {
-    for (const conta of [inv.centroCusto, inv.conta1, inv.conta2, inv.conta3]) {
-      if (conta) contaTotals.set(conta, (contaTotals.get(conta) ?? 0) + inv.valor);
-    }
+  for (const inv of comValor) {
+    const conta = contaEfetiva(inv);
+    if (conta) contaTotals.set(conta, (contaTotals.get(conta) ?? 0) + inv.valor);
   }
 
   // Só o realizado: o vencimento saiu do painel porque, quando uma duplicata
   // vence, o ERP gera outra no lugar — a data antiga não descreve mais nada
   // que se possa comparar com o que entrou.
   const recebidoPorDia = new Map<string, number>();
-  for (const inv of invoices) {
+  for (const inv of comValor) {
     if (inv.pagamento) recebidoPorDia.set(inv.pagamento, (recebidoPorDia.get(inv.pagamento) ?? 0) + inv.valor);
   }
 
@@ -555,19 +675,41 @@ export function aggregateFinanceiro(invoices: Invoice[]): FinanceiroData {
     (a, b) => parseDateLoose(a.date) - parseDateLoose(b.date)
   );
 
-  // Leitura de ingresso: quantos ingressos saíram. Linha sem coluna de
-  // quantidade conta como 1 — é um ingresso.
+  /**
+   * Leitura de ingresso: quantas PESSOAS entraram, não quantas linhas existem.
+   *
+   * O relatório de credenciamento sai fatiado a cada 4.000 linhas e a mesma
+   * pessoa aparece em mais de uma lista — quem comprou ingresso e ainda foi
+   * convidado por dois expositores tem três linhas, todas com o mesmo código de
+   * crachá. Contar linha a linha inflaria o público; o código de crachá é o que
+   * identifica a pessoa, e é ele que entra no campo "número".
+   *
+   * A planilha que traz coluna de quantidade (uma linha para vários ingressos)
+   * continua somando essa coluna: ali a linha não é uma pessoa.
+   */
   const naoCanceladas = invoices.filter((i) => i.status !== "cancelado");
-  const qtdIngressos = naoCanceladas.reduce((s, i) => s + (i.quantidade ?? 1), 0);
+  // a fonte identifica direto; o bloco `ingresso` é a rede para as linhas
+  // gravadas antes de a fonte existir, que não têm o campo preenchido
+  const porCredenciamento = naoCanceladas.filter(
+    (i) => i.fonte === "ingresso-quantidade" || (!i.fonte && i.ingresso)
+  );
+  const qtdIngressos = porCredenciamento.length
+    ? new Set(porCredenciamento.map((i) => i.numero)).size
+    : naoCanceladas.reduce((s, i) => s + (i.quantidade ?? 1), 0);
 
   return {
     asOf: new Date().toISOString(),
     kpis: {
       totalRecebido,
       ticketMedio,
-      qtdDuplicatas: invoices.length,
+      qtdDuplicatas: comValor.length,
       qtdIngressos: naoCanceladas.length ? qtdIngressos : null,
-      valorEmAberto: calcularValorEmAberto(naoCanceladas),
+      // com o financeiro carregado, em aberto é o que as duplicatas dizem: a
+      // soma das que não foram pagas. Sem ele, sobra a conta do credenciamento
+      // (devido menos pago), que é o que aquele relatório sabe informar.
+      valorEmAberto: temFinanceiro
+        ? comValor.filter((i) => i.status === "pendente").reduce((s, i) => s + i.valor, 0)
+        : calcularValorEmAberto(naoCanceladas),
     },
     timeline,
     paymentMethods: Array.from(methodTotals, ([label, value]) => ({ label, value })),
@@ -575,10 +717,9 @@ export function aggregateFinanceiro(invoices: Invoice[]): FinanceiroData {
       .sort((a, b) => b.value - a.value)
       .slice(0, 10),
     statusBreakdown: Array.from(statusTotals, ([label, value]) => ({ label, value })),
-    // conta com total zerado não diz nada e só ocupa linha no painel — some.
-    contas: Array.from(contaTotals, ([name, value]) => ({ name, value }))
-      .filter((c) => c.value > 0)
-      .sort((a, b) => b.value - a.value),
+    // Conta zerada continua na lista, com a barra vazia: ela existe no rateio e sumir dali
+    // faria parecer que não foi importada. A ordenação joga essas linhas para o fim.
+    contas: Array.from(contaTotals, ([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value),
     origens: Array.from(origemTotals, ([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value),
     invoices,
   };
@@ -1415,7 +1556,38 @@ export function mapRowsToPedidos(
     return "";
   };
 
-  return table.rows.map((r) => {
+  /**
+   * Linha de totalização do relatório — não é um pedido.
+   *
+   * Os relatórios de elétrica terminam com uma linha "Total de Kva:" em que a
+   * célula do rótulo tem colspan cobrindo as colunas de identificação. O número
+   * cai exatamente na coluna de kVA, e a linha passava por um pedido válido: o
+   * total do evento entrava duas vezes, uma somada estande a estande e outra
+   * pelo rodapé, e o cartão de potência mostrava o dobro.
+   *
+   * O corte não olha o texto — "Total de Kva:" e "Total de Kva's solicitados:"
+   * já são diferentes entre os dois relatórios de elétrica, e o próximo formato
+   * seria outro. Olha o que todo pedido de verdade tem e nenhum rodapé tem: a
+   * linha diz de quem é, por expositor, nome fantasia, CNPJ ou estande.
+   */
+  const temColunaDeIdentificacao = iExpositor >= 0 || iNomeFantasia >= 0 || iCnpj >= 0 || iEstande >= 0 || combinada;
+  const identificada = (r: string[]) =>
+    !!(
+      (r[iExpositor] ?? "").trim() ||
+      (r[iNomeFantasia] ?? "").trim() ||
+      estandeDaLinha(r).trim() ||
+      // o documento conta só quando tem dígito: a coluna dele é a primeira da
+      // planilha, e é justamente ali que o rótulo do rodapé ("Total de Kva:")
+      // cai quando o colspan cobre o resto — texto puro não identifica ninguém
+      /\d/.test(r[iCnpj] ?? "")
+    );
+
+  // a planilha que não mapeou nenhuma coluna de identificação passa inteira: ali
+  // o critério não tem como distinguir rodapé de pedido, e descartar tudo seria
+  // pior do que deixar passar.
+  const linhas = temColunaDeIdentificacao ? table.rows.filter(identificada) : table.rows;
+
+  return linhas.map((r) => {
     const rawStatus = iStatus >= 0 ? r[iStatus] : "";
     // a coluna pode vir como "13/07/2026 17:13" — a hora embutida só é
     // aproveitada quando a planilha não tem coluna de hora própria
@@ -1503,65 +1675,78 @@ export const KVA_INCLUSO_POR_M2 = 0.11;
 export const VALOR_KVA_EXTRA = 692.12;
 
 /**
- * Cálculo de energia por estande.
+ * Energia de cada estande.
  *
- * Regra do contrato: o expositor já tem 0,11 kVA/m², a energia é fornecida em
- * unidade de kVA não fracionada e qualquer fração é arredondada para a unidade
- * imediatamente acima (1,4 kVA vira 2 kVA). O arredondamento incide sobre o
- * excedente, que é o que se cobra.
+ * Contrato de participação: o expositor já tem 0,11 kVA/m² e a energia é
+ * fornecida em unidade de kVA não fracionada — qualquer fração sobe para a
+ * unidade seguinte (9,9 vira 10). Em cima disso, ele contrata quanto quiser de
+ * potência adicional direto no relatório de elétrica, sem pedir autorização a
+ * ninguém: é esse número que a coluna de kVA traz.
+ *
+ * Então: disponível no estande = franquia (arredondada) + adicional
+ * contratado; e o adicional é o que tem preço (R$ por kVA).
  *
  * A área vem repetida em todas as linhas do mesmo estande (é a área dele, não
- * de cada item), então entra uma vez só — somá-la multiplicaria o incluso pelo
- * número de pedidos.
+ * de cada item), então entra uma vez só — somá-la multiplicaria a franquia
+ * pelo número de pedidos.
  */
 function calcularEnergia(pedidos: PedidoServico[]): EnergiaPorEstande | null {
   const comKva = pedidos.filter((p) => p.kva != null && p.status !== "cancelado");
   if (!comKva.length) return null;
 
-  const porEstande = new Map<string, { estande: string; expositor: string; area: number | null; kva: number }>();
+  const porEstande = new Map<
+    string,
+    { estande: string; expositor: string; area: number | null; areas: Set<number>; kva: number }
+  >();
   for (const p of comKva) {
-    // sem número de estande, o expositor identifica a linha — é o que sobra
-    const chave = (p.estande || p.expositor || "—").trim().toUpperCase();
+    // Uma linha por estande, exatamente como ele está escrito no relatório:
+    // "SD 109" e "SD109" são estandes diferentes até que a operação diga o
+    // contrário — unir grafias parecidas juntaria dois estandes de verdade do
+    // mesmo expositor. Sem número de estande, o expositor identifica a linha.
+    const chave = p.estande.trim() || `EXPOSITOR:${p.expositor.trim()}`;
     const atual = porEstande.get(chave);
     if (atual) {
       atual.kva += p.kva as number;
-      if (atual.area == null && p.area != null) atual.area = p.area;
+      if (p.area != null) {
+        atual.areas.add(p.area);
+        // a franquia segue a maior área informada: na dúvida entre dois
+        // números para o mesmo estande, o maior é o que favorece o expositor
+        atual.area = atual.area == null ? p.area : Math.max(atual.area, p.area);
+      }
       if (!atual.expositor) atual.expositor = p.expositor;
     } else {
       porEstande.set(chave, {
         estande: p.estande || "—",
         expositor: p.expositor,
         area: p.area ?? null,
+        areas: new Set(p.area != null ? [p.area] : []),
         kva: p.kva as number,
       });
     }
   }
 
   const linhas: EstandeEnergia[] = Array.from(porEstande.values()).map((e) => {
-    const kvaIncluso = e.area != null ? e.area * KVA_INCLUSO_POR_M2 : null;
-    const excedente = kvaIncluso != null ? Math.max(0, e.kva - kvaIncluso) : null;
-    const kvaExtra = excedente != null ? Math.ceil(excedente) : null;
+    const kvaIncluso = e.area != null ? Math.ceil(e.area * KVA_INCLUSO_POR_M2) : null;
     return {
       estande: e.estande,
       expositor: e.expositor,
       area: e.area,
-      kvaContratado: e.kva,
+      // mais de uma área para o mesmo estande é erro de cadastro na origem:
+      // a tela avisa em vez de escolher em silêncio
+      areasDivergentes: e.areas.size > 1 ? Array.from(e.areas).sort((a, b) => a - b) : null,
       kvaIncluso,
-      kvaExtra,
-      valorExtra: kvaExtra != null ? kvaExtra * VALOR_KVA_EXTRA : null,
+      kvaAdicional: e.kva,
+      kvaTotal: kvaIncluso != null ? kvaIncluso + e.kva : null,
+      valorAdicional: e.kva * VALOR_KVA_EXTRA,
     };
   });
 
-  linhas.sort((a, b) => (b.kvaExtra ?? -1) - (a.kvaExtra ?? -1) || b.kvaContratado - a.kvaContratado);
+  linhas.sort((a, b) => b.kvaAdicional - a.kvaAdicional || (b.kvaTotal ?? 0) - (a.kvaTotal ?? 0));
 
   return {
     linhas,
     kvaPorM2: KVA_INCLUSO_POR_M2,
     valorPorKva: VALOR_KVA_EXTRA,
-    totalContratado: linhas.reduce((s, l) => s + l.kvaContratado, 0),
-    totalIncluso: linhas.reduce((s, l) => s + (l.kvaIncluso ?? 0), 0),
-    totalExtra: linhas.reduce((s, l) => s + (l.kvaExtra ?? 0), 0),
-    valorTotalExtra: linhas.reduce((s, l) => s + (l.valorExtra ?? 0), 0),
     semArea: linhas.filter((l) => l.area == null).length,
   };
 }
@@ -1586,10 +1771,13 @@ export function aggregateOperacional(
 
   // quantos itens cada tipo de estande contratou — é a leitura que o
   // operacional usa para dimensionar equipe e material por perfil de estande.
-  // soma da potência: linha sem kVA fica fora, e sem nenhuma linha com o dado
-  // o KPI nem aparece na tela
-  const comKva = ativos.filter((p) => p.kva != null);
-  const kvaTotal = comKva.length ? comKva.reduce((s, p) => s + (p.kva as number), 0) : null;
+  // Potência total do evento: a franquia de todos os estandes (0,11 kVA/m²,
+  // arredondada) mais o adicional que cada um contratou. Antes somava só o
+  // adicional e ficava igual ao segundo número do cartão de energia.
+  const energia = calcularEnergia(pedidos);
+  const kvaTotal = energia
+    ? energia.linhas.reduce((s, l) => s + (l.kvaIncluso ?? 0) + l.kvaAdicional, 0)
+    : null;
 
   const tipoTotals = new Map<string, number>();
   for (const p of ativos) {
@@ -1643,7 +1831,7 @@ export function aggregateOperacional(
     tiposEstande: Array.from(tipoTotals, ([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value),
     equipamentos: somarPor((p) => p.equipamento),
     tipos: somarPor((p) => p.tipo),
-    energia: calcularEnergia(pedidos),
+    energia,
     expositoresSemContratacao,
     pedidos,
   };

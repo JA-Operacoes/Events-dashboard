@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useDeferredValue } from "react";
+import { useEffect, useMemo, useState, useDeferredValue, useRef } from "react";
 import { useEvent } from "@/lib/eventContext";
 import { useI18n } from "@/lib/i18n";
 import { useAuth } from "@/lib/auth";
@@ -11,6 +11,7 @@ import { aggregateCredenciamento, mergeImportedParticipantes } from "@/lib/sprea
 import { Donut, StatusBars, LineChart } from "@/components/charts";
 import { BarraDiasEvento, PaineisPublico } from "@/components/publico";
 import { getCached, setCached } from "@/lib/pageCache";
+import { useJanelaVirtual, ALTURA_LINHA_TABELA } from "@/lib/virtual";
 import { enviarImportEmLotes } from "@/lib/importClient";
 import { matchesPeriod, formatRelativeTime, parseDateLoose } from "@/lib/period";
 import { notifySuccess, notifyWarning, notifyError } from "@/lib/swal";
@@ -43,6 +44,16 @@ export default function CredenciamentoPage() {
   const [kpiOverrides, setKpiOverrides] = useState<Partial<CredenciamentoData["kpis"]>>({});
 
   const rawParticipantes = apiData?.participantes ?? importedParticipantes;
+
+  /**
+   * Tabela virtualizada: só as linhas visíveis existem no DOM.
+   *
+   * O relatório de credenciamento traz dezenas de milhares de linhas — com sete
+   * colunas, montar a lista inteira significa mais de setenta mil células, e a
+   * página inteira trava: não só a rolagem, mas qualquer clique, porque o
+   * navegador continua recalculando layout enquanto o resto da tela espera.
+   */
+  const areaTabela = useRef<HTMLDivElement>(null);
 
   const categorias = useMemo(
     () => Array.from(new Set(rawParticipantes.map((p) => p.categoria).filter(Boolean))).sort((a, b) => a.localeCompare(b, "pt-BR")),
@@ -92,9 +103,21 @@ export default function CredenciamentoPage() {
     [apiData, hasImported, filteredParticipantes]
   );
 
+  const linhasTabela = data?.participantes ?? [];
+  const janela = useJanelaVirtual(areaTabela, linhasTabela.length, ALTURA_LINHA_TABELA);
+  const linhasNaTela = linhasTabela.slice(janela.inicio, janela.fim);
+
+  // filtro novo devolve lista nova: a rolagem antiga não corresponde a nada nela,
+  // e a tabela abriria no meio do resultado
+  const assinaturaFiltros = `${buscaAplicada}|${statusFilter}|${categoria}|${period}|${diaEvento}`;
+  useEffect(() => {
+    areaTabela.current?.scrollTo({ top: 0 });
+  }, [assinaturaFiltros]);
+
   // A coluna de valor só aparece quando a planilha traz o dado; sem isso seria
   // uma coluna inteira de traços.
   const mostrarValor = rawParticipantes.some((p) => p.valor != null);
+  const colunasTabela = mostrarValor ? 7 : 6;
 
   const importedFiles = Array.from(
     importedParticipantes.reduce((map, p) => {
@@ -321,6 +344,7 @@ export default function CredenciamentoPage() {
             <Donut
               data={data.categorias}
               valueFmt={(v) => int(v)}
+              legenda={{ nome: "Categoria", valor: "Qtd" }}
               selected={categoria === "all" ? undefined : categoria}
               onSelect={(nome) => setCategoria((atual) => (atual === nome ? "all" : nome))}
             />
@@ -361,7 +385,7 @@ export default function CredenciamentoPage() {
             <p>{t("credenciamento.table.desc")}</p>
           </div>
         </div>
-        <div className="table-scroll scroll-slim">
+        <div className="table-scroll scroll-slim" ref={areaTabela}>
           <table>
             <thead>
               <tr>
@@ -375,17 +399,25 @@ export default function CredenciamentoPage() {
               </tr>
             </thead>
             <tbody>
-              {!data?.participantes.length ? (
+              {!linhasTabela.length ? (
                 <EmptyTableRow
-                  colSpan={mostrarValor ? 7 : 6}
+                  colSpan={colunasTabela}
                   title={t("credenciamento.table.empty.title")}
                   desc={t("credenciamento.table.empty.desc")}
                 />
               ) : (
-                data.participantes.map((p, i) => (
+                <>
+                  {/* o espaço das linhas que ficaram fora da janela: mantém a
+                      barra de rolagem fiel ao total */}
+                  {janela.espacoAntes > 0 && (
+                    <tr aria-hidden="true" className="linha-espacadora" style={{ height: janela.espacoAntes }}>
+                      <td colSpan={colunasTabela} />
+                    </tr>
+                  )}
+                  {linhasNaTela.map((p, i) => (
                   // mesmo raciocínio do Financeiro: documento pode se repetir se a
                   // pessoa aparecer em mais de uma planilha/arquivo importado.
-                  <tr key={`${p.documento}-${i}`}>
+                  <tr key={`${p.documento}-${janela.inicio + i}`}>
                     <td className="td-nome">
                       <span className="td-nome-texto">{p.nome}</span>
                     </td>
@@ -401,14 +433,23 @@ export default function CredenciamentoPage() {
                       </span>
                     </td>
                   </tr>
-                ))
+                  ))}
+                  {janela.espacoDepois > 0 && (
+                    <tr aria-hidden="true" className="linha-espacadora" style={{ height: janela.espacoDepois }}>
+                      <td colSpan={colunasTabela} />
+                    </tr>
+                  )}
+                </>
               )}
             </tbody>
           </table>
         </div>
         <div className="table-foot">
-          <span>{data?.participantes.length ? `${data.participantes.length.toLocaleString("pt-BR")} ${t("credenciamento.table.count")}` : t("credenciamento.table.countZero")}</span>
-          <span>{t("common.page")}</span>
+          <span>
+            {linhasTabela.length
+              ? `${linhasTabela.length.toLocaleString("pt-BR")} ${t("credenciamento.table.count")}`
+              : t("credenciamento.table.countZero")}
+          </span>
         </div>
       </div>
 

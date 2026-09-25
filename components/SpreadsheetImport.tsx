@@ -9,7 +9,9 @@ import {
   suggestFinanceiroMapping,
   suggestFinanceiroStatusMapping,
   mapRowsToInvoices,
-  sugerirOrigemFinanceiro,
+  sugerirTipoFinanceiro,
+  FINANCEIRO_INGRESSO_VALORES_FIELDS,
+  suggestFinanceiroIngressoValoresMapping,
   suggestCredenciamentoMapping,
   suggestCredenciamentoStatusMapping,
   mapRowsToParticipantes,
@@ -63,6 +65,8 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
   suggestStatusMappingFn,
   mapRowsFn,
   extraField,
+  statusFixoField,
+  semLote,
   onImported,
 }: {
   eventId: string | null;
@@ -85,7 +89,8 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
     mapping: ColumnMapping<K>,
     statusMapping: StatusMapping<V>,
     sourceFile: string,
-    extra?: string
+    extra?: string,
+    statusFixo?: V
   ) => T[];
   /**
    * Valor que não está em nenhuma coluna e sim no próprio arquivo — no
@@ -102,6 +107,25 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
     /** Quando presente, o campo vira uma escolha fechada em vez de texto livre. */
     options?: Array<{ value: string; label: string }>;
   };
+  /**
+   * Tipos de planilha que não podem entrar em lote: cada arquivo pára para
+   * revisão, mesmo quando o cabeçalho é igual ao do anterior.
+   */
+  semLote?: (extra: string) => boolean;
+  /**
+   * Situação que vale para o arquivo inteiro, para as planilhas que são
+   * exportadas já filtradas e por isso não têm coluna de status — o contas a
+   * receber de ingresso sai do ERP como um arquivo de pagas, um de em aberto e
+   * um de canceladas. Só aparece nos tipos que pedem, e some quando a planilha
+   * traz a coluna, que nesse caso é quem manda.
+   */
+  statusFixoField?: {
+    label: string;
+    hint?: string;
+    options: { value: V; label: string }[];
+    /** Em quais escolhas do extraField este campo faz sentido. */
+    visivelQuando: (extra: string) => boolean;
+  };
   onImported: (rows: T[], fileName: string) => void;
 }) {
   // Todo módulo de importação tem um campo "status" que precisa de de-para de valores —
@@ -115,6 +139,7 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState("");
   const [extraValue, setExtraValue] = useState("");
+  const [statusFixo, setStatusFixo] = useState<V | "">("");
 
   // Upload em lote: quando mais de um arquivo é escolhido de uma vez, os que
   // têm exatamente o mesmo cabeçalho do primeiro (mesmo mapeamento) são
@@ -192,11 +217,15 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
       queueRef.current = queueRef.current.slice(1);
       if (!parsed) continue;
 
+      const extraDeste = extraField ? extraField.derive(file.name, parsed) : "";
       const last = lastMappingRef.current;
-      if (last && sameHeaders(parsed.headers, last.headers)) {
+      // o atalho do lote só vale para os tipos que o aceitam: em "ingresso,
+      // quantidade" cada arquivo é revisado, porque um engano ali entra
+      // multiplicado por milhares de linhas e sem nada na tela que o denuncie.
+      if (last && sameHeaders(parsed.headers, last.headers) && !semLote?.(extraDeste)) {
         // o valor extra é sempre derivado DESTE arquivo, nunca herdado do
         // anterior — em lote, cabeçalho igual não significa serviço igual.
-        const rows = mapRowsFn(parsed, last.mapping, last.statusMapping, file.name, extraField?.derive(file.name, parsed));
+        const rows = mapRowsFn(parsed, last.mapping, last.statusMapping, file.name, extraDeste, statusFixo || undefined);
         onImported(rows, file.name);
         setImported((prev) => [...prev, { fileName: file.name, rows: rows.length }]);
         continue;
@@ -205,9 +234,8 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
       // cabeçalho diferente (ou é o primeiro arquivo) — pausa a fila e pede revisão manual.
       setTable(parsed);
       setFileName(file.name);
-      const extraDerivado = extraField ? extraField.derive(file.name, parsed) : "";
-      if (extraField) setExtraValue(extraDerivado);
-      applyMappingFor(parsed, extraDerivado);
+      if (extraField) setExtraValue(extraDeste);
+      applyMappingFor(parsed, extraDeste);
       setProcessing(false);
       return;
     }
@@ -228,6 +256,9 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
   }
 
   const camposAtivos = typeof fields === "function" ? fields(extraValue) : fields;
+  // a coluna de status, quando existe, manda: pedir a situação do arquivo ao
+  // lado dela seriam duas respostas para a mesma pergunta.
+  const pedeStatusFixo = !!statusFixoField && statusFixoField.visivelQuando(extraValue) && !mapping[STATUS_KEY];
   const statusValues = table && mapping[STATUS_KEY] ? distinctValues(table, mapping[STATUS_KEY]!) : [];
   const missingRequired = camposAtivos.filter((f) => f.required && !mapping[f.key]);
   const missingStatusMap = statusValues.some((v) => !statusMapping[v]);
@@ -239,11 +270,13 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
     table &&
     missingRequired.length === 0 &&
     (!mapping[STATUS_KEY] || (statusValues.length > 0 && !missingStatusMap)) &&
-    (!extraField || extraValue.trim() !== "");
+    (!extraField || extraValue.trim() !== "") &&
+    (!pedeStatusFixo || statusFixo !== "");
 
   function reset() {
     setTable(null);
     setFileName("");
+    setStatusFixo("");
     setError(null);
     setBatchTotal(0);
     setImported([]);
@@ -276,7 +309,7 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
 
   async function handleConfirm() {
     if (!table || !eventId || !canConfirm) return;
-    const rows = mapRowsFn(table, mapping, statusMapping, fileName, extraValue.trim() || undefined);
+    const rows = mapRowsFn(table, mapping, statusMapping, fileName, extraValue.trim() || undefined, statusFixo || undefined);
     saveMapping(module, eventId, mapping, statusMapping);
     onImported(rows, fileName);
     setImported((prev) => [...prev, { fileName, rows: rows.length }]);
@@ -430,6 +463,34 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
             </label>
           )}
 
+          {semLote?.(extraValue) && (
+            <p className="import-hint" style={{ margin: "8px 2px 0" }}>
+              Esta planilha é confirmada um arquivo por vez. Se você escolheu vários, eles entram na fila e cada
+              um pede revisão — o cabeçalho igual não os importa de uma vez como nos outros tipos.
+            </p>
+          )}
+
+          {pedeStatusFixo && (
+            <label className="import-field" style={{ marginTop: 12, maxWidth: 360 }}>
+              <span>
+                {statusFixoField!.label} <em>*</em>
+              </span>
+              <select
+                className="input"
+                value={statusFixo}
+                onChange={(e) => setStatusFixo(e.target.value as V)}
+              >
+                <option value="">— escolher —</option>
+                {statusFixoField!.options.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+              {statusFixoField!.hint && <span className="import-hint">{statusFixoField!.hint}</span>}
+            </label>
+          )}
+
           {/* Campos em blocos por assunto: com quase 20 colunas numa grade
               única, achar "onde está o estande" virava caça ao tesouro. */}
           {Array.from(
@@ -517,6 +578,8 @@ function SpreadsheetImportPanel<K extends string, V extends string, T>({
                   ? `Falta escolher: ${missingRequired.map((f) => f.label).join(", ")}`
                   : extraField && !extraValue.trim()
                   ? `Falta escolher: ${extraField.label}`
+                  : pedeStatusFixo && statusFixo === ""
+                  ? `Falta escolher: ${statusFixoField!.label}`
                   : missingStatusMap
                   ? "Falta o de-para de algum status"
                   : "Falta mapear a coluna de status"}
@@ -561,24 +624,45 @@ export function SpreadsheetImportFinanceiro({
       eventId={eventId}
       module="financeiro"
       title="Importar planilha — Financeiro"
-      description="Selecione um ou vários arquivos de uma vez — os que tiverem o mesmo cabeçalho do primeiro são importados em lote automaticamente; também dá pra subir de novo sempre que atualizar — reenviar um arquivo com o mesmo nome substitui só as linhas dele, arquivos diferentes se somam. O mapeamento abaixo já vem sugerido pelo nome das colunas — confira e ajuste só o que estiver errado."
-      fields={(origem) => (origem === "Ingresso" ? FINANCEIRO_INGRESSO_FIELDS : FINANCEIRO_FIELDS)}
+      description="São três planilhas diferentes: contas a receber com rateio (expositor), contas a receber sem rateio (valores de ingresso) e o relatório de credenciamento (quantidade de ingressos). O tipo é reconhecido pelo cabeçalho do arquivo — confira antes de confirmar. Selecione um ou vários de uma vez: os que tiverem o mesmo cabeçalho do primeiro entram em lote — menos o relatório de credenciamento, que é confirmado um arquivo por vez. Reenviar um arquivo com o mesmo nome substitui só as linhas dele; arquivos diferentes se somam."
+      fields={(tipo) =>
+        tipo === "ingresso-quantidade"
+          ? FINANCEIRO_INGRESSO_FIELDS
+          : tipo === "ingresso-valores"
+          ? FINANCEIRO_INGRESSO_VALORES_FIELDS
+          : FINANCEIRO_FIELDS
+      }
       statusOptions={FINANCEIRO_STATUS_OPTIONS}
-      suggestMappingFn={(headers, origem) =>
-        origem === "Ingresso" ? suggestFinanceiroIngressoMapping(headers) : suggestFinanceiroMapping(headers)
+      suggestMappingFn={(headers, tipo) =>
+        tipo === "ingresso-quantidade"
+          ? suggestFinanceiroIngressoMapping(headers)
+          : tipo === "ingresso-valores"
+          ? suggestFinanceiroIngressoValoresMapping(headers)
+          : suggestFinanceiroMapping(headers)
       }
       suggestStatusMappingFn={suggestFinanceiroStatusMapping}
       mapRowsFn={mapRowsToInvoices}
       extraField={{
-        label: "Origem desta planilha",
-        hint: "define de onde vem a receita — sem isso a planilha aparece só na visão geral",
+        label: "Tipo desta planilha",
+        hint: "cada tipo tem colunas próprias — a sugestão vem do cabeçalho do arquivo",
         options: [
-          { value: "auto", label: "Usar a coluna Origem da planilha" },
-          { value: "Expositor", label: "Expositor" },
-          { value: "Ingresso", label: "Ingresso" },
+          { value: "expositor", label: "Expositor — contas a receber com rateio" },
+          { value: "ingresso-valores", label: "Ingresso, valores — contas a receber sem rateio" },
+          { value: "ingresso-quantidade", label: "Ingresso, quantidade — relatório de credenciamento" },
         ],
-        derive: sugerirOrigemFinanceiro,
+        derive: sugerirTipoFinanceiro,
       }}
+      statusFixoField={{
+        label: "Situação destas linhas",
+        hint: "este relatório sai do ERP já filtrado e não traz coluna de status — vale para o arquivo inteiro",
+        options: FINANCEIRO_STATUS_OPTIONS,
+        visivelQuando: (tipo) => tipo === "ingresso-valores",
+      }}
+      // o relatório de credenciamento sai fatiado em vários arquivos de cabeçalho
+      // idêntico — exatamente o caso em que o lote dispara sozinho. Aqui ele fica
+      // de fora: são milhares de linhas por arquivo, e um mapeamento errado
+      // entraria multiplicado, sem nada na tela denunciando.
+      semLote={(tipo) => tipo === "ingresso-quantidade"}
       onImported={onImported}
     />
   );
