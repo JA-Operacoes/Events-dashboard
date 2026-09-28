@@ -14,7 +14,13 @@ import {
 } from "@/lib/dataSource";
 import { ConnChip, Empty, EmptyTableRow, KpiRow, money, int, pct } from "@/components/ui";
 import { SpreadsheetImportFinanceiro } from "@/components/SpreadsheetImport";
-import { aggregateFinanceiro, mergeImportedInvoices, classificarOrigem, contaEfetiva } from "@/lib/spreadsheetImport";
+import {
+  aggregateFinanceiro,
+  mergeImportedInvoices,
+  classificarOrigem,
+  contaEfetiva,
+  invoicesComValor,
+} from "@/lib/spreadsheetImport";
 import { Donut, BarList, StatusBars, LineChart, PALETTE } from "@/components/charts";
 import { getCached, setCached } from "@/lib/pageCache";
 import { useJanelaVirtual, ALTURA_LINHA_TABELA } from "@/lib/virtual";
@@ -146,10 +152,14 @@ export default function FinanceiroPage() {
    * status) e conta só o que foi pago — é a mesma leitura do cartão "Total
    * recebido", e os dois têm de bater. A única coisa ignorada é o filtro de
    * origem em si: senão as outras abas zerariam ao escolher uma.
+   *
+   * Passa por `invoicesComValor` pela mesma razão que o cartão: com o contas a
+   * receber e o relatório de credenciamento importados juntos, cada ingresso
+   * aparece nas duas planilhas e a aba "Ingresso" mostrava o dobro do valor.
    */
   const origemTotais = useMemo(() => {
     const tot: Partial<Record<OrigemReceita, number>> = {};
-    for (const inv of aplicarFiltros(rawInvoices, true)) {
+    for (const inv of invoicesComValor(aplicarFiltros(rawInvoices, true))) {
       if (inv.status !== "pago") continue;
       const tipo = inv.origemTipo ?? classificarOrigem(inv.origem);
       if (!tipo) continue;

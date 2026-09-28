@@ -617,19 +617,30 @@ export function contaEfetiva(inv: Invoice): string | null {
   return inv.conta1 || inv.conta2 || inv.conta3 || inv.centroCusto || null;
 }
 
-export function aggregateFinanceiro(invoices: Invoice[]): FinanceiroData {
-  /**
-   * O credenciamento e o contas a receber descrevem a mesma venda: o relatório
-   * de credenciamento traz "Total pago" por inscrição e o financeiro traz a
-   * duplicata correspondente. Com os dois importados, somar tudo cobraria cada
-   * ingresso duas vezes — então o dinheiro sai do financeiro e o credenciamento
-   * entra só com contagem, perfil e presença.
-   *
-   * Quando o financeiro ainda não foi importado, o credenciamento vale pelos
-   * dois: é melhor mostrar o valor que ele conhece do que uma tela zerada.
-   */
+/**
+ * As linhas que podem entrar numa soma de dinheiro.
+ *
+ * O credenciamento e o contas a receber descrevem a mesma venda: o relatório
+ * de credenciamento traz "Total pago" por inscrição e o financeiro traz a
+ * duplicata correspondente. Com os dois importados, somar tudo cobraria cada
+ * ingresso duas vezes — então o dinheiro sai do financeiro e o credenciamento
+ * entra só com contagem, perfil e presença.
+ *
+ * Quando o financeiro ainda não foi importado, o credenciamento vale pelos
+ * dois: é melhor mostrar o valor que ele conhece do que uma tela zerada.
+ *
+ * Toda soma exibida na tela tem de passar por aqui — cartões, gráficos e o
+ * total de cada aba de origem. Foi o que faltava na barra de origem, que
+ * somava as duas fontes e mostrava o ingresso com o dobro do valor.
+ */
+export function invoicesComValor(invoices: Invoice[]): Invoice[] {
   const temFinanceiro = invoices.some((i) => i.fonte === "ingresso-valores" || i.fonte === "expositor");
-  const comValor = temFinanceiro ? invoices.filter((i) => i.fonte !== "ingresso-quantidade") : invoices;
+  return temFinanceiro ? invoices.filter((i) => i.fonte !== "ingresso-quantidade") : invoices;
+}
+
+export function aggregateFinanceiro(invoices: Invoice[]): FinanceiroData {
+  const temFinanceiro = invoices.some((i) => i.fonte === "ingresso-valores" || i.fonte === "expositor");
+  const comValor = invoicesComValor(invoices);
 
   const pagos = comValor.filter((i) => i.status === "pago");
   const totalRecebido = pagos.reduce((s, i) => s + i.valor, 0);
@@ -1039,6 +1050,35 @@ export function suggestCredenciamentoStatusMapping(values: string[]): StatusMapp
   return suggestValueMapping(values, CREDENCIAMENTO_STATUS_KEYWORDS);
 }
 
+/**
+ * Situação da credencial quando a planilha NÃO tem uma coluna própria para ela.
+ *
+ * O relatório de credenciamento quase nunca traz esse campo: o que ele traz é
+ * "Compareceu" (presença na catraca) e a situação do pagamento, e é essa
+ * segunda que passa pelo de-para do import. Por isso a credencial se lê assim:
+ *
+ * - quem passou pela catraca está credenciado, não importa o pagamento;
+ * - senão vale o que o de-para disse do pagamento — pago e cortesia/isento
+ *   significam credencial emitida, cancelado cancela, só "em aberto" fica
+ *   pendente;
+ * - sem nenhuma das duas colunas, a linha existir já é o credenciamento.
+ *
+ * Antes, sem coluna própria, quem não compareceu virava "pendente" direto — e
+ * a tela mostrava "Em aberto" para o evento inteiro mesmo com todos os status
+ * do de-para marcados como pago ou isento. Comparecimento é presença, não
+ * emissão de credencial: essa leitura vive nos painéis de público.
+ */
+function statusCredencialDe(
+  compareceu: boolean | null,
+  statusPagamento: InvoiceStatus | null
+): CredenciamentoStatus {
+  if (compareceu === true) return "credenciado";
+  if (statusPagamento === "cancelado") return "cancelado";
+  if (statusPagamento === "pendente") return "pendente";
+  // pago, cortesia/isento ou planilha sem coluna de pagamento
+  return "credenciado";
+}
+
 export function mapRowsToParticipantes(
   table: SheetTable,
   mapping: ColumnMapping<CredenciamentoFieldKey>,
@@ -1082,6 +1122,8 @@ export function mapRowsToParticipantes(
 
   return table.rows.map((r, i) => {
     const rawStatus = iStatus >= 0 ? r[iStatus] : "";
+    const statusPagamento = iStatus >= 0 ? statusMapping[rawStatus] ?? null : null;
+    const compareceu = iCompareceu >= 0 ? parseSimNao(r[iCompareceu]) : null;
     const separado = iDataComp >= 0 ? separarDataHora(r[iDataComp] ?? "") : { data: "", hora: "" };
     const dataComp = separado.data;
     const horaDaData = separado.hora;
@@ -1092,18 +1134,12 @@ export function mapRowsToParticipantes(
       categoria: iCategoria >= 0 ? r[iCategoria] : "",
       credenciadoEm: iCredenciadoEm >= 0 && r[iCredenciadoEm] ? r[iCredenciadoEm] : null,
       checkinEm: iCheckinEm >= 0 && r[iCheckinEm] ? r[iCheckinEm] : null,
-      // sem coluna própria de credenciamento, quem passou pela catraca está
-      // credenciado e o resto fica pendente — é a leitura que o relatório permite
       status:
         iStatusCred >= 0
           ? mapaCredenciamento[r[iStatusCred] ?? ""] ?? "pendente"
-          : iCompareceu >= 0
-          ? parseSimNao(r[iCompareceu])
-            ? "credenciado"
-            : "pendente"
-          : "credenciado",
+          : statusCredencialDe(compareceu, statusPagamento),
       valor: iValor >= 0 && r[iValor] ? parseValor(r[iValor]) : null,
-      statusPagamento: iStatus >= 0 ? statusMapping[rawStatus] ?? null : null,
+      statusPagamento,
       ingresso: temPerfil
         ? {
             compareceu: iCompareceu >= 0 ? parseSimNao(r[iCompareceu]) : null,
@@ -1131,8 +1167,109 @@ export function mergeImportedParticipantes(
   return [...existing.filter((p) => p.sourceFile !== sourceFile), ...incoming];
 }
 
+/**
+ * Identidade da pessoa dentro do módulo de credenciamento.
+ *
+ * É o documento (CPF/RG) ou o código de crachá que a planilha trouxe, sem
+ * pontuação e sem caixa: o mesmo CPF chega como "123.456.789-00" num arquivo e
+ * "12345678900" no outro. Linhas sem coluna de documento recebem no import uma
+ * chave sintética ("arquivo.xlsx#42"), que já é única por natureza — elas nunca
+ * se juntam a ninguém, e é o comportamento certo: sem identificador não há como
+ * afirmar que duas linhas são a mesma pessoa.
+ */
+export function chaveParticipante(p: Participante): string {
+  const doc = (p.documento ?? "").trim();
+  if (doc.includes("#")) return doc; // chave sintética do import
+  const limpo = doc.replace(/[^\p{L}\p{N}]/gu, "").toUpperCase();
+  return limpo || `${p.sourceFile ?? ""}|${normalize(p.nome ?? "")}`;
+}
+
+/** Ordem de precedência da situação da credencial ao fundir linhas repetidas. */
+const PESO_STATUS_CREDENCIAL: Record<CredenciamentoStatus, number> = {
+  credenciado: 2,
+  pendente: 1,
+  cancelado: 0,
+};
+
+/**
+ * Funde as linhas repetidas da mesma pessoa numa só.
+ *
+ * O relatório de credenciamento sai fatiado a cada 4.000 linhas e a mesma
+ * pessoa aparece em mais de uma lista — quem comprou ingresso e ainda foi
+ * convidado por dois expositores tem três linhas, todas com o mesmo documento.
+ * Contar linha a linha inflava o público e fazia o cartão "Credenciados" ficar
+ * acima de "Pessoas credenciadas" do financeiro, que sempre contou por código
+ * de crachá distinto.
+ *
+ * A fusão é otimista de propósito: se QUALQUER linha da pessoa diz que ela
+ * compareceu, ela compareceu; se qualquer uma está credenciada, ela está
+ * credenciada. Um convite não usado não pode apagar a entrada que aconteceu.
+ * O valor fica com o maior entre as linhas (o convite gratuito não zera o
+ * ingresso pago), nunca com a soma — somar cobraria a mesma venda de novo.
+ */
+export function dedupParticipantes(participantes: Participante[]): Participante[] {
+  const porPessoa = new Map<string, Participante>();
+  for (const p of participantes) {
+    const chave = chaveParticipante(p);
+    const atual = porPessoa.get(chave);
+    if (!atual) {
+      porPessoa.set(chave, p);
+      continue;
+    }
+    porPessoa.set(chave, fundirParticipantes(atual, p));
+  }
+  return Array.from(porPessoa.values());
+}
+
+function fundirParticipantes(a: Participante, b: Participante): Participante {
+  // a linha com presença registrada manda no perfil; sem isso, a mais completa
+  const compareceuA = a.ingresso?.compareceu === true;
+  const compareceuB = b.ingresso?.compareceu === true;
+  const base = compareceuB && !compareceuA ? b : a;
+  const outro = base === a ? b : a;
+
+  const valores = [a.valor, b.valor].filter((v): v is number => v != null);
+  return {
+    ...base,
+    nome: base.nome || outro.nome,
+    categoria: base.categoria || outro.categoria,
+    credenciadoEm: base.credenciadoEm ?? outro.credenciadoEm,
+    checkinEm: base.checkinEm ?? outro.checkinEm,
+    status:
+      PESO_STATUS_CREDENCIAL[b.status] > PESO_STATUS_CREDENCIAL[a.status] ? b.status : a.status,
+    valor: valores.length ? Math.max(...valores) : null,
+    // um cancelamento só vale para a pessoa se TODAS as linhas dela estiverem
+    // canceladas — é a mesma leitura do financeiro, que conta o crachá desde
+    // que exista uma venda não cancelada com aquele código.
+    statusPagamento:
+      [a.statusPagamento, b.statusPagamento].find((st) => st != null && st !== "cancelado") ??
+      base.statusPagamento ??
+      outro.statusPagamento ??
+      null,
+    ingresso: base.ingresso
+      ? {
+          ...base.ingresso,
+          compareceu: compareceuA || compareceuB ? true : base.ingresso.compareceu ?? outro.ingresso?.compareceu ?? null,
+        }
+      : outro.ingresso ?? null,
+  };
+}
+
 export function aggregateCredenciamento(participantes: Participante[]): CredenciamentoData {
-  const totalCredenciados = participantes.filter((p) => p.status === "credenciado").length;
+  /**
+   * "Credenciados" é quantas PESSOAS têm credencial nesta edição — a mesma
+   * leitura de "Pessoas credenciadas" no financeiro, que conta códigos de
+   * crachá distintos entre as linhas não canceladas. Por isso a contagem é a
+   * lista inteira menos os cancelamentos, e não só as linhas cujo status diz
+   * "credenciado": sem coluna própria de situação da credencial, esse status
+   * sai do "Compareceu", e ali ele responde por presença, não por emissão —
+   * quem foi credenciado e não veio caía fora da conta.
+   *
+   * A deduplicação acontece antes, na página (ver dedupParticipantes).
+   */
+  const totalCredenciados = participantes.filter(
+    (p) => p.status !== "cancelado" && p.statusPagamento !== "cancelado"
+  ).length;
   const checkinsRealizados = participantes.filter((p) => !!p.checkinEm).length;
   // não há um campo separado de "presença confirmada" na planilha — usamos o
   // check-in como proxy até existir uma fonte melhor (ex.: RSVP na API real).

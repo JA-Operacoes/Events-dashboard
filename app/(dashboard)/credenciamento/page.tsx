@@ -4,10 +4,16 @@ import { useEffect, useMemo, useState, useDeferredValue, useRef } from "react";
 import { useEvent } from "@/lib/eventContext";
 import { useI18n } from "@/lib/i18n";
 import { useAuth } from "@/lib/auth";
-import { fetchCredenciamento, type CredenciamentoData, type CredenciamentoFilters, type Participante } from "@/lib/dataSource";
+import {
+  fetchCredenciamento,
+  type CredenciamentoData,
+  type CredenciamentoFilters,
+  type CredenciamentoStatus,
+  type Participante,
+} from "@/lib/dataSource";
 import { ConnChip, Empty, EmptyTableRow, KpiRow, int, money, pct } from "@/components/ui";
 import { SpreadsheetImportCredenciamento } from "@/components/SpreadsheetImport";
-import { aggregateCredenciamento, mergeImportedParticipantes } from "@/lib/spreadsheetImport";
+import { aggregateCredenciamento, dedupParticipantes, mergeImportedParticipantes } from "@/lib/spreadsheetImport";
 import { Donut, StatusBars, LineChart } from "@/components/charts";
 import { BarraDiasEvento, PaineisPublico } from "@/components/publico";
 import { getCached, setCached } from "@/lib/pageCache";
@@ -28,6 +34,26 @@ export default function CredenciamentoPage() {
   // planilha traz a data do comparecimento.
   const [diaEvento, setDiaEvento] = useState("todos");
   /**
+   * Linhas repetidas da mesma pessoa. O relatório de credenciamento sai
+   * fatiado a cada 4.000 linhas e quem comprou ingresso e ainda foi convidado
+   * por dois expositores aparece três vezes, sempre com o mesmo documento.
+   * O padrão é contar gente, não linha — é o que faz "Credenciados" bater com
+   * "Pessoas credenciadas" do financeiro. "Todas as linhas" existe para
+   * conferir a planilha crua quando o número parecer estranho.
+   */
+  const [duplicatas, setDuplicatas] = useState<"unicas" | "todas">("unicas");
+  /**
+   * Filtros da própria tabela de participantes — mesma ideia do Financeiro:
+   * afinam a lista sem recalcular cartões e gráficos, que continuam
+   * respondendo só aos filtros do topo. É o que permite procurar uma pessoa
+   * sem perder de vista o total do evento.
+   */
+  const [tableSearch, setTableSearch] = useState("");
+  const [tableStatus, setTableStatus] = useState<"all" | CredenciamentoStatus>("all");
+  const [tableCategoria, setTableCategoria] = useState("all");
+  const [tableRange, setTableRange] = useState({ de: "", ate: "" });
+  const tableSearchAplicada = useDeferredValue(tableSearch);
+  /**
    * Busca adiada: digitar refiltra milhares de linhas e refaz a agregação a
    * cada tecla. Com useDeferredValue o campo responde na hora e o recálculo
    * acontece com a última letra digitada, sem travar a digitação.
@@ -43,7 +69,15 @@ export default function CredenciamentoPage() {
   const hasImported = importedParticipantes.length > 0;
   const [kpiOverrides, setKpiOverrides] = useState<Partial<CredenciamentoData["kpis"]>>({});
 
-  const rawParticipantes = apiData?.participantes ?? importedParticipantes;
+  const linhasCruas = apiData?.participantes ?? importedParticipantes;
+
+  // base de todo o módulo: uma linha por pessoa (ou a planilha crua, quando o
+  // filtro de duplicatas pede). Cartões, painéis, gráficos e tabela saem daqui.
+  const rawParticipantes = useMemo(
+    () => (duplicatas === "unicas" ? dedupParticipantes(linhasCruas) : linhasCruas),
+    [linhasCruas, duplicatas]
+  );
+  const linhasFundidas = linhasCruas.length - rawParticipantes.length;
 
   /**
    * Tabela virtualizada: só as linhas visíveis existem no DOM.
@@ -103,13 +137,41 @@ export default function CredenciamentoPage() {
     [apiData, hasImported, filteredParticipantes]
   );
 
-  const linhasTabela = data?.participantes ?? [];
+  // o que os filtros do topo deixaram passar — a referência do "de N" no rodapé
+  const linhasDoTopo = data?.participantes ?? [];
+
+  const linhasTabela = useMemo(() => {
+    const term = tableSearchAplicada.trim().toLowerCase();
+    return (data?.participantes ?? []).filter((p) => {
+      if (tableStatus !== "all" && p.status !== tableStatus) return false;
+      if (tableCategoria !== "all" && p.categoria !== tableCategoria) return false;
+      if (tableRange.de || tableRange.ate) {
+        // uma ponta só já vale como limite aberto: o intervalo é do usuário
+        const t = parseDateLoose(p.credenciadoEm ?? "");
+        if (Number.isNaN(t)) return false;
+        if (tableRange.de) {
+          const de = parseDateLoose(tableRange.de);
+          if (!Number.isNaN(de) && t < de) return false;
+        }
+        if (tableRange.ate) {
+          const ate = parseDateLoose(tableRange.ate) + 24 * 60 * 60 * 1000 - 1;
+          if (!Number.isNaN(ate) && t > ate) return false;
+        }
+      }
+      if (term && !`${p.nome} ${p.documento} ${p.categoria}`.toLowerCase().includes(term)) return false;
+      return true;
+    });
+  }, [data, tableSearchAplicada, tableStatus, tableCategoria, tableRange]);
+
+  const filtrosTabelaAtivos =
+    tableStatus !== "all" || tableCategoria !== "all" || !!tableRange.de || !!tableRange.ate || !!tableSearch.trim();
+
   const janela = useJanelaVirtual(areaTabela, linhasTabela.length, ALTURA_LINHA_TABELA);
   const linhasNaTela = linhasTabela.slice(janela.inicio, janela.fim);
 
   // filtro novo devolve lista nova: a rolagem antiga não corresponde a nada nela,
   // e a tabela abriria no meio do resultado
-  const assinaturaFiltros = `${buscaAplicada}|${statusFilter}|${categoria}|${period}|${diaEvento}`;
+  const assinaturaFiltros = `${buscaAplicada}|${statusFilter}|${categoria}|${period}|${diaEvento}|${duplicatas}|${tableSearchAplicada}|${tableStatus}|${tableCategoria}|${tableRange.de}|${tableRange.ate}`;
   useEffect(() => {
     areaTabela.current?.scrollTo({ top: 0 });
   }, [assinaturaFiltros]);
@@ -267,10 +329,29 @@ export default function CredenciamentoPage() {
             </button>
           ))}
         </div>
+        {/* só aparece quando há o que fundir: sem repetição, o botão seria uma
+            escolha sem efeito e mais ruído na barra */}
+        {(linhasFundidas > 0 || duplicatas === "todas") && (
+          <div className="seg" title={t("credenciamento.duplicatas.label")}>
+            {(["unicas", "todas"] as const).map((v) => (
+              <button key={v} className={duplicatas === v ? "on" : ""} onClick={() => setDuplicatas(v)}>
+                {v === "unicas" ? t("credenciamento.duplicatas.ocultar") : t("credenciamento.duplicatas.mostrar")}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="search">
           <input type="text" placeholder={t("credenciamento.search")} value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
       </div>
+
+      {duplicatas === "unicas" && linhasFundidas > 0 && (
+        <div className="import-files-bar">
+          <span>
+            {linhasFundidas.toLocaleString("pt-BR")} {t("credenciamento.duplicatas.aviso")}
+          </span>
+        </div>
+      )}
 
       <KpiRow
         defs={KPI_DEFS}
@@ -384,6 +465,82 @@ export default function CredenciamentoPage() {
             <h3>{t("credenciamento.table.title")}</h3>
             <p>{t("credenciamento.table.desc")}</p>
           </div>
+          {/* busca e filtros na mesma linha: são todos recortes da lista
+              abaixo, e separá-los em duas faixas sugeria escopos diferentes. */}
+          <div className="table-tools">
+            <div className="search">
+              <input
+                type="text"
+                placeholder={t("credenciamento.table.search")}
+                value={tableSearch}
+                onChange={(e) => setTableSearch(e.target.value)}
+              />
+            </div>
+
+            <span className="table-tools-sep">{t("col.credenciadoEm")}</span>
+            <input
+              type="date"
+              className="field"
+              value={tableRange.de}
+              max={tableRange.ate || undefined}
+              onChange={(e) => setTableRange((r) => ({ ...r, de: e.target.value }))}
+              aria-label="Data inicial"
+            />
+            <span className="table-tools-sep">até</span>
+            <input
+              type="date"
+              className="field"
+              value={tableRange.ate}
+              min={tableRange.de || undefined}
+              onChange={(e) => setTableRange((r) => ({ ...r, ate: e.target.value }))}
+              aria-label="Data final"
+            />
+
+            <select
+              className="field"
+              value={tableStatus}
+              onChange={(e) => setTableStatus(e.target.value as "all" | CredenciamentoStatus)}
+              aria-label={t("col.status")}
+            >
+              <option value="all">{t("common.allStatus")}</option>
+              {(["credenciado", "pendente", "cancelado"] as const).map((v) => (
+                <option key={v} value={v}>
+                  {STATUS_LABEL[v]}
+                </option>
+              ))}
+            </select>
+
+            {categorias.length > 0 && (
+              <select
+                className="field"
+                value={tableCategoria}
+                onChange={(e) => setTableCategoria(e.target.value)}
+                aria-label={t("col.categoria")}
+              >
+                <option value="all">{t("common.allCategories")}</option>
+                {categorias.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            )}
+
+            {filtrosTabelaAtivos && (
+              <button
+                className="field field-btn"
+                type="button"
+                onClick={() => {
+                  setTableStatus("all");
+                  setTableCategoria("all");
+                  setTableRange({ de: "", ate: "" });
+                  setTableSearch("");
+                }}
+              >
+                Limpar
+              </button>
+            )}
+          </div>
         </div>
         <div className="table-scroll scroll-slim" ref={areaTabela}>
           <table>
@@ -399,11 +556,23 @@ export default function CredenciamentoPage() {
               </tr>
             </thead>
             <tbody>
-              {!linhasTabela.length ? (
+              {!linhasDoTopo.length ? (
                 <EmptyTableRow
                   colSpan={colunasTabela}
                   title={t("credenciamento.table.empty.title")}
                   desc={t("credenciamento.table.empty.desc")}
+                />
+              ) : !linhasTabela.length ? (
+                <EmptyTableRow
+                  colSpan={colunasTabela}
+                  title="nenhum participante encontrado"
+                  desc={
+                    tableSearch.trim()
+                      ? `nenhum resultado para "${tableSearch}" entre os ${linhasDoTopo.length.toLocaleString(
+                          "pt-BR"
+                        )} participantes que passaram pelos filtros do topo`
+                      : "nenhum participante atende aos filtros da tabela"
+                  }
                 />
               ) : (
                 <>
@@ -447,7 +616,9 @@ export default function CredenciamentoPage() {
         <div className="table-foot">
           <span>
             {linhasTabela.length
-              ? `${linhasTabela.length.toLocaleString("pt-BR")} ${t("credenciamento.table.count")}`
+              ? `${linhasTabela.length.toLocaleString("pt-BR")} ${t("credenciamento.table.count")}${
+                  filtrosTabelaAtivos ? ` de ${linhasDoTopo.length.toLocaleString("pt-BR")}` : ""
+                }`
               : t("credenciamento.table.countZero")}
           </span>
         </div>
