@@ -155,6 +155,10 @@ model ImportedParticipante {
   editionId     String
   sourceFile    String
   nome          String
+  /// Código do crachá — a identidade da pessoa na edição (ver
+  /// chaveParticipante). Vazio nas linhas importadas antes deste campo existir,
+  /// que continuam identificadas pelo documento.
+  cracha        String   @default("")
   documento     String
   categoria     String
   credenciadoEm String?

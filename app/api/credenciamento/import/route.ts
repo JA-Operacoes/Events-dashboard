@@ -20,6 +20,7 @@ export async function GET(req: NextRequest) {
     where: { editionId },
     select: {
       nome: true,
+      cracha: true,
       documento: true,
       categoria: true,
       credenciadoEm: true,
@@ -42,6 +43,9 @@ export async function GET(req: NextRequest) {
   });
   const participantes: Participante[] = rows.map((r) => ({
     nome: r.nome,
+    // '' é o que as linhas importadas antes da coluna existir têm — vira null
+    // para a identidade cair no documento, como era antes.
+    cracha: r.cracha || null,
     documento: r.documento,
     categoria: r.categoria,
     credenciadoEm: r.credenciadoEm,
@@ -103,6 +107,7 @@ export async function POST(req: NextRequest) {
     editionId,
     sourceFile,
     nome: p.nome,
+    cracha: p.cracha ?? "",
     documento: p.documento,
     categoria: p.categoria,
     credenciadoEm: p.credenciadoEm,

@@ -981,6 +981,9 @@ export function loadMapping<K extends string, V extends string>(
 
 export const CREDENCIAMENTO_FIELDS = [
   { key: "nome", label: "Nome", required: true, grupo: "Quem" },
+  // O crachá é quem identifica a pessoa (ver chaveParticipante). Fica antes do
+  // documento porque é o campo que decide a contagem de credenciados.
+  { key: "cracha", label: "Código do crachá", required: false, grupo: "Quem" },
   { key: "documento", label: "Documento (CPF/RG)", required: true, grupo: "Quem" },
   { key: "categoria", label: "Categoria", required: false, grupo: "Quem" },
 
@@ -1012,6 +1015,9 @@ export const CREDENCIAMENTO_FIELDS = [
 export type CredenciamentoFieldKey = (typeof CREDENCIAMENTO_FIELDS)[number]["key"];
 
 const CREDENCIAMENTO_FIELD_KEYWORDS: { key: CredenciamentoFieldKey; patterns: RegExp[] }[] = [
+  // "CÓDIGO CRACHÁ" (o identificador) e não "NOME CRACHÁ" (o que é impresso
+  // nele) — daí os padrões serem fechados em vez de um /crach[aá]/ solto.
+  { key: "cracha", patterns: [/c[oó]digo.*crach[aá]/, /^crach[aá]$/, /c[oó]digo.*(ingresso|convite)/] },
   { key: "documento", patterns: [/documento/, /\bcpf\b/, /\brg\b/, /identidade/] },
   // presença antes de check-in: no relatório de credenciamento é a coluna
   // "Compareceu" que diz quem passou, e ela seria capturada pelo padrão de
@@ -1090,6 +1096,7 @@ export function mapRowsToParticipantes(
     return col ? table.headers.indexOf(col) : -1;
   };
   const iNome = idx("nome");
+  const iCracha = idx("cracha");
   const iDoc = idx("documento");
   const iCategoria = idx("categoria");
   const iCredenciadoEm = idx("credenciadoEm");
@@ -1120,7 +1127,19 @@ export function mapRowsToParticipantes(
   const temPerfil =
     iCompareceu >= 0 || iDataComp >= 0 || iConvite >= 0 || iCargo >= 0 || iSegmento >= 0 || iEstado >= 0 || iPais >= 0;
 
-  return table.rows.map((r, i) => {
+  return table.rows
+    .filter((r) => {
+      // Legenda no meio da planilha (o relatório do LABACE traz uma linha só
+      // com o texto do "DIREITO DE IMAGEM") entrava como uma pessoa sem nome e
+      // inflava a contagem de credenciados. Sem nome, sem crachá e sem
+      // documento não há ninguém ali — é a mesma rede do financeiro, que já
+      // descartava essas linhas.
+      const semNome = iNome >= 0 && !r[iNome]?.trim();
+      const semCracha = iCracha < 0 || !r[iCracha]?.trim();
+      const semDoc = iDoc < 0 || !r[iDoc]?.trim();
+      return !(semNome && semCracha && semDoc);
+    })
+    .map((r, i) => {
     const rawStatus = iStatus >= 0 ? r[iStatus] : "";
     const statusPagamento = iStatus >= 0 ? statusMapping[rawStatus] ?? null : null;
     const compareceu = iCompareceu >= 0 ? parseSimNao(r[iCompareceu]) : null;
@@ -1130,6 +1149,7 @@ export function mapRowsToParticipantes(
     const horaComp = temColunaHora && r[iHoraComp] ? r[iHoraComp] : horaDaData;
     return {
       nome: iNome >= 0 ? r[iNome] : "",
+      cracha: iCracha >= 0 && r[iCracha] ? r[iCracha] : null,
       documento: iDoc >= 0 && r[iDoc] ? r[iDoc] : `${sourceFile}#${i + 1}`,
       categoria: iCategoria >= 0 ? r[iCategoria] : "",
       credenciadoEm: iCredenciadoEm >= 0 && r[iCredenciadoEm] ? r[iCredenciadoEm] : null,
@@ -1170,14 +1190,24 @@ export function mergeImportedParticipantes(
 /**
  * Identidade da pessoa dentro do módulo de credenciamento.
  *
- * É o documento (CPF/RG) ou o código de crachá que a planilha trouxe, sem
- * pontuação e sem caixa: o mesmo CPF chega como "123.456.789-00" num arquivo e
- * "12345678900" no outro. Linhas sem coluna de documento recebem no import uma
- * chave sintética ("arquivo.xlsx#42"), que já é única por natureza — elas nunca
- * se juntam a ninguém, e é o comportamento certo: sem identificador não há como
- * afirmar que duas linhas são a mesma pessoa.
+ * O código do crachá manda, quando a planilha o traz: é o identificador que o
+ * sistema de credenciamento emite por pessoa, e é a mesma chave que o
+ * financeiro usa em "Pessoas credenciadas" — sem isso os dois cartões contam
+ * coisas diferentes para o mesmo evento. O CPF não serve como identidade
+ * principal porque falta em milhares de linhas (convidado de expositor,
+ * estrangeiro), e cada linha sem ele vira uma "pessoa" a mais: no LABACE 2026
+ * são 1.458 linhas sem CPF contra 4 sem crachá.
+ *
+ * Sem crachá, cai no documento (CPF/RG) sem pontuação e sem caixa: o mesmo CPF
+ * chega como "123.456.789-00" num arquivo e "12345678900" no outro. Linhas sem
+ * nenhum dos dois recebem no import uma chave sintética ("arquivo.xlsx#42"),
+ * que já é única por natureza — elas nunca se juntam a ninguém, e é o
+ * comportamento certo: sem identificador não há como afirmar que duas linhas
+ * são a mesma pessoa.
  */
 export function chaveParticipante(p: Participante): string {
+  const cracha = (p.cracha ?? "").trim();
+  if (cracha) return `C:${cracha.replace(/[^\p{L}\p{N}]/gu, "").toUpperCase()}`;
   const doc = (p.documento ?? "").trim();
   if (doc.includes("#")) return doc; // chave sintética do import
   const limpo = doc.replace(/[^\p{L}\p{N}]/gu, "").toUpperCase();
@@ -1232,6 +1262,7 @@ function fundirParticipantes(a: Participante, b: Participante): Participante {
   return {
     ...base,
     nome: base.nome || outro.nome,
+    cracha: base.cracha || outro.cracha || null,
     categoria: base.categoria || outro.categoria,
     credenciadoEm: base.credenciadoEm ?? outro.credenciadoEm,
     checkinEm: base.checkinEm ?? outro.checkinEm,
@@ -1258,8 +1289,10 @@ function fundirParticipantes(a: Participante, b: Participante): Participante {
 export function aggregateCredenciamento(participantes: Participante[]): CredenciamentoData {
   /**
    * "Credenciados" é quantas PESSOAS têm credencial nesta edição — a mesma
-   * leitura de "Pessoas credenciadas" no financeiro, que conta códigos de
-   * crachá distintos entre as linhas não canceladas. Por isso a contagem é a
+   * leitura de "Pessoas credenciadas" no financeiro, e agora pela mesma chave:
+   * a lista chega aqui já deduplicada por código de crachá (ver
+   * chaveParticipante), então contar as linhas não canceladas é contar crachás
+   * distintos. Por isso a contagem é a
    * lista inteira menos os cancelamentos, e não só as linhas cujo status diz
    * "credenciado": sem coluna própria de situação da credencial, esse status
    * sai do "Compareceu", e ali ele responde por presença, não por emissão —

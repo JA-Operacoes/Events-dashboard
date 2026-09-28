@@ -363,6 +363,13 @@ export type CredenciamentoStatus = "credenciado" | "pendente" | "cancelado";
 
 export type Participante = {
   nome: string;
+  /**
+   * Código do crachá — o identificador que o sistema de credenciamento emite
+   * por pessoa. É ele que diz quantas pessoas existem na edição: o CPF falta
+   * em milhares de linhas (convidado de expositor, estrangeiro) e o documento
+   * sintético do import conta cada linha como uma pessoa diferente.
+   */
+  cracha?: string | null;
   documento: string;
   categoria: string;
   credenciadoEm: string | null;
